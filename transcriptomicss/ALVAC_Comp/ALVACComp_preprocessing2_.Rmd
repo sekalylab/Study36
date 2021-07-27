@@ -1,0 +1,1011 @@
+---
+title: "ALVACComp_preprocess2_ANP"
+author: "Adam Pelletier"
+date: "3/3/2020"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(forcats))
+suppressPackageStartupMessages(library(janitor))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(writexl))
+suppressPackageStartupMessages(library(SuperExactTest))
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+
+```{r setup_dir}
+
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+
+inputDir <- setup_dir("input")
+outDir <- setup_dir("output")
+
+genesetsDir <- setup_dir("../input/genesets")
+figureDir <- setup_dir(file.path(outDir,"figures"))
+dataOutDir <- setup_dir(file.path(outDir,"data"))
+
+
+```
+
+
+
+```{r load_Data  }
+
+load("output/alvaccomp.eset.RData")
+
+
+
+
+```
+
+
+
+
+
+```{r average_probes}
+probe_gene_select <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Ill_Probe") %>%
+                gather(sampleID, value, -Ill_Probe) %>%
+                inner_join(.,fData(eset) %>% rownames_to_column("Ill_Probe"), by  ="Ill_Probe") %>%
+                dplyr::select(sampleID, value, Ill_Probe, BROAD.Gene.Symbol, SYMBOL ) %>%
+                filter(SYMBOL != "---") %>%
+                filter(!is.na(BROAD.Gene.Symbol)) %>%
+                #filter(Ill_Probe %in% c("ILMN_1725881", "ILMN_1804174")) %>%
+                group_by(Ill_Probe) %>%
+                mutate(mean_probe = mean(value)) %>%
+                ungroup() %>%
+                group_by(BROAD.Gene.Symbol) %>%
+                mutate(probe_max = ifelse(max(mean_probe, na.rm = T) == mean_probe, 1, 0)) %>%
+                ungroup() %>%
+                filter(probe_max == 1) %>%
+                mutate(combo = paste(Ill_Probe, BROAD.Gene.Symbol, sep = "__")) %>%
+                dplyr::select(Ill_Probe, BROAD.Gene.Symbol, combo) %>%
+                unique()
+
+
+
+eset_exprs <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Ill_Probe") %>%
+                gather(sampleID, value, -Ill_Probe) %>%
+                inner_join(.,fData(eset) %>% rownames_to_column("Ill_Probe"), by  ="Ill_Probe") %>%
+                dplyr::select(sampleID, value, Ill_Probe, SYMBOL, BROAD.Gene.Symbol ) %>%
+                filter(SYMBOL != "---") %>%
+                filter(Ill_Probe %in% probe_gene_select$Ill_Probe) %>%
+                dplyr::select(sampleID, Ill_Probe, value) %>%
+                spread(sampleID, value) %>%
+                column_to_rownames("Ill_Probe")
+
+fData_ave <- fData(eset) %>%
+              rownames_to_column("ID") %>%
+              filter(ID %in% row.names(eset_exprs)) %>%
+              column_to_rownames("ID")
+eset_exprs <- eset_exprs[colnames(exprs(eset))]
+eset_exprs <- eset_exprs[row.names(fData_ave),]
+
+eset_ave <- ExpressionSet(assayData   = as.matrix(eset_exprs),
+                         phenoData   = AnnotatedDataFrame(pData(eset)),
+                         featureData = AnnotatedDataFrame(fData_ave))
+
+
+
+save(eset_ave, file = "eset_canonical.RData")
+
+
+```
+
+
+```{r pre-postvaxx}
+
+  pData_prepost  <- pData(eset_ave) %>% 
+                      as.data.frame(.) %>%
+                      rownames_to_column("rows") %>%
+                      #filter(!grepl("PLACEBO", treatment)) %>%
+                      mutate(immunization_time = paste(`vaccination time`, `time after immunization`, sep = "_")) %>%
+                      mutate(immunization_time = factor(immunization_time)) %>%
+                      #mutate(donor =  factor(paste("d", as.character(donor), sep = ""))) %>%
+                      #mutate(VisitTreatment = factor(paste(visit, treatment,stimulation , sep  = "_"))) %>%
+                      column_to_rownames("rows")
+
+#eset_ave <- eset_ave_pilot[,row.names(pData_prepost)]
+Visit <- factor(pData_prepost$immunization_time, levels = rev(levels(pData_prepost$immunization_time)))
+donor <- pData_prepost$donor
+
+designMat <- model.matrix(~0 + donor + Visit)
+
+rownames(designMat) <- row.names(pData_prepost)
+colnames(designMat) <- gsub("donor", "", colnames(designMat))
+colnames(designMat) <- gsub("Visit", "", colnames(designMat))
+
+
+fits <- lmFit(eset_ave,
+             design   = designMat)
+
+
+#contrastMat <- makeContrasts(contrasts = "post_VACCINE-pre_VACCINE", levels = fits$design)
+#fit2 <- contrasts.fit(fit = fits)
+fit2 <- eBayes(fit = fits)
+
+topTables_postvax <- sapply(colnames(fits$design), simplify = F, USE.NAMES = T, function(x){
+  degs <- topTable(fit2, coef = x, n = Inf ) %>%
+            as.data.frame(.) %>%
+            rownames_to_column("ID") %>%
+            dplyr::select(ID, ProbeID, SYMBOL, BROAD.Gene.Symbol, logFC, AveExpr, t, P.Value, adj.P.Val) %>%
+            filter(!is.na(BROAD.Gene.Symbol)) %>%
+            column_to_rownames("ID")
+  return(degs)
+})
+
+
+
+```
+
+
+```{r fgsea_func}
+
+fgsea_function_topT <- function(x,gmtfile, method = "logp", p_thr = 0.05, n.perm = 10000, maxSize = 500, minSize = 15) {
+  ###function to do preranked geneset enrichment using fgsea using a given 1. topTable input and 2.gmt file path
+  if(!method %in% c("logp", "T")){
+    stop("Invalid method for fgsea_function. Options are 'logp' or 'T")
+  }
+  topTable_all <- x %>% as.data.frame(.) %>% 
+            rownames_to_column("Illumina_ID") %>% 
+            filter(!SYMBOL %in%  c("", "---")) %>%
+            # group_by(SYMBOL) %>%
+            # # summarise(mean_logFC = mean(logFC),
+            # #           mean_t = mean(t),
+            # #           mean_P.value = mean(P.Value)) %>%
+            # #filter(!duplicated(BROAD.Gene.Symbol)) %>%
+            # ungroup(.) %>%
+            column_to_rownames("BROAD.Gene.Symbol")
+  if(method == "logp") {
+      topTable_all$rank_metric <- sign(topTable_all$t) *   -log(shrunk_deseq_output$P.Value)
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  } else if(method == "T") {
+    topTable_all$rank_metric <- topTable_all$t 
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  }
+  pathways <- gmtPathways(gmtfile)
+  fgseaRes<-fgsea(pathways,ranks_set,minSize=minSize,maxSize=maxSize,nperm=n.perm)
+  fgseaRes<- fgseaRes[fgseaRes$pval <=p_thr,]
+  fgseaRes<-fgseaRes[order(fgseaRes$padj),]
+  fgseaRes<-fgseaRes[!is.na(fgseaRes$padj),]
+  return(fgseaRes)
+}
+
+fgsea_output_topT <- function(fgsea_vector,
+                         eset_contrast,
+                         outcome,
+                         geneset_list,
+                         geneset,
+                         fileDir,
+                         method = "shLFC",
+                         p_thr = 0.05, 
+                         maxSize = 500) {
+  if(length(fgsea_vector[[outcome]]) == 0) {
+    fgsea_list <- list()
+  } else {
+    fgsea_list <- fgsea_vector[[outcome]]
+  }
+  fgsea_list[[geneset]]$geneset_file <- geneset_list[[geneset]]
+  fgsea_list[[geneset]]$output <- fgsea_function_topT(eset_contrast, geneset_list[[geneset]], method = method,
+                                                      p_thr = p_thr, maxSize = maxSize)
+  write.csv(as.data.frame(fgsea_list[[geneset]]$output[,c(1:7)]), 
+          file=file.path(fileDir,paste(outcome,geneset,method,"gsea.csv", sep="_")), 
+          quote = FALSE)
+  fgsea_vector[[outcome]] <- fgsea_list
+  return(fgsea_vector)
+}
+
+```
+
+```{r gsea_hm}
+gsea_hm <- function(fgsea_object,
+                    contrasts,
+                    geneset,
+                    pval_thr,
+                    filename, 
+                    subset = c(),
+                    max_gs = 10,
+                    clusterRowsGap = FALSE){
+  pathways <- list()
+  df_list <- list()
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    }
+    
+    pathways[[i]] <- df_temp
+  }
+  total_pathway <- unique(unlist(pathways))
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      dplyr::select(pathway,NES) %>%
+      #dplyr::slice(.,1:max_gs) %>%
+      mutate(contrast = i)
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      mutate(contrast = i)
+    }
+    
+    df_list[[i]] <- df_temp
+  }
+  merged_df <- do.call("rbind", df_list) %>% spread(contrast, NES)
+  if(dim(merged_df)[1] > 0){
+    df <- merged_df %>%
+    gather(contrast,NES,-pathway) %>%
+    mutate(NES = ifelse(is.na(NES), 0 , NES)) %>%
+    mutate(NES = as.numeric(NES)) %>%
+    spread(contrast,NES) %>%
+    column_to_rownames("pathway") %>%
+    as.matrix(.)
+  
+  
+  
+    paletteLength <- 500
+    colorLS <- colorRampPalette(colors = c("blue", "cyan",
+                                           "white",
+                                          "yellow", "red"))(paletteLength)
+  
+    # myBreaks <- c(seq(min(df), 0, length.out=ceiling(paletteLength/2) + 1),
+    #             seq(max(df)/paletteLength, max(df), length.out=floor(paletteLength/2)))
+    
+    if(dim(df)[1] > 1){
+      clusterFlag <- TRUE
+    } else {
+      clusterFlag <- FALSE
+    }
+    
+    
+    topScale <- max(abs(min(df)),abs(max(df)))
+    print(topScale)
+    myBreaks <- seq(-topScale, topScale, length.out=paletteLength)
+    hm_object <- list()
+    if (clusterRowsGap == FALSE) {
+      p <- pheatmap(df,
+               main = paste("GSEA_",geneset, sep=""),
+                    color = colorLS,
+                    fontsize= 6,
+                    cellheight = 6,
+                    cellwidth = 6,
+                    show_colnames = TRUE,
+                    annotation_names_row = FALSE,
+                    cluster_cols = FALSE,
+                    cluster_rows = clusterFlag,
+                    breaks = myBreaks,
+                    treeheight_row = 2,
+               filename = filename)
+      hm_object$clusterRow <- "none"
+    } else {
+      p_temp <- pheatmap(df)
+      cluster_annot <- heatmap_gap_clustering(p_temp, K.max = 15)
+      dev.off()
+      tiff(file = file.path(figureDir,paste(filename,".tiff", sep="")), family=journal_font)
+      p <- pheatmap(df,
+               main = paste("GSEA_",geneset, sep=""),
+                    color = colorLS,
+                    fontsize= 6,
+                    cellheight = 6,
+                    cellwidth = 6,
+                    show_colnames = TRUE,
+                    annotation_names_row = FALSE,
+                    cluster_cols = FALSE,
+                    breaks = myBreaks,
+                    annotation_row = cluster_annot$df["clusterID"])
+      dev.off()
+  
+  
+      hm_object$clusterRow <- cluster_annot
+    }
+    hm_object$plot <- p
+    return(hm_object)
+  }
+}
+
+```
+
+```{r gsea_titers, echo=FALSE}
+
+
+genesetsDir <- setup_dir("../input/genesets")
+
+geneset_list <- list(c2 = file.path(genesetsDir,
+                                        "c2.all.v6.1.symbols.gmt.txt"),
+                     c3 = file.path(genesetsDir,
+                                        "c3.all.v6.1.symbols.gmt.txt"),
+                     CHEA = file.path(genesetsDir,
+                                        "CHEA-tf.gmt"),
+                     interferome = file.path(genesetsDir,
+                                        "interferome.isg.gmt"),
+                     LM22 = "~/Documents/GMT_files/lm22.gmt")
+
+geneset_list2 <- list(LM22 = "~/Documents/GMT_files/lm22.gmt")
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_post <- list()
+
+
+for(j in names(topTables_postvax)[c(7:23)]) {
+  for(i in c("CHEA", "LM22"))
+
+  fgsea_analysis_post[[]]  <- fgsea_output_topT(fgsea_analysis_post ,
+                             eset_contrast = topTables_postvax[[j]],
+                             outcome = j,
+                             geneset_list = geneset_list,
+                             geneset = i,
+                             fileDir = GSEA_dir,
+                             p_thr = 0.99,
+                             method = "T", 
+                             maxSize = 5000)
+  if(dim(fgsea_analysis_post[[j]][[i]]$output)[1] >0){
+    print(c(j,dim(fgsea_analysis_post[[j]][[i]]$output)[1]))
+  }
+}
+
+
+
+for(j in names(topTables_postvax)[c(7:23)]) {
+
+  fgsea_analysis_post  <- fgsea_output_topT(fgsea_analysis_post ,
+                             eset_contrast = topTables_postvax[[j]],
+                             outcome = j,
+                             geneset_list = geneset_list2,
+                             geneset = "LM22",
+                             fileDir = GSEA_dir,
+                             p_thr = 0.99,
+                             method = "T", 
+                             maxSize = 5000)
+
+}
+
+
+
+timepoint_order <- data.frame("hours" =  c("16 hours", "24 hours", "48 hours", "72 hours", "4 weeks") , "order" = c(1,2,3,4,5))
+
+CREB_contrasts <- do.call("rbind", lapply(names(fgsea_analysis_post), function(x){
+  df <- fgsea_analysis_post[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        dplyr::filter(pval < 0.05) %>%
+        filter(pathway == "CREB1") %>%
+        dplyr::select(-leadingEdge) %>%
+        mutate(contrast = x)
+  return(df)
+})) %>%
+  mutate(hours = gsub(".*immunization_", "", contrast)) %>%
+  mutate(hours = gsub("4 weeks", "Week 4", hours)) %>%
+  #mutate(hours = gsub("immunization_", "", hours)) %>%
+  inner_join(., timepoint_order, by ="hours") %>%
+  mutate(immunization = gsub(" immunization.*", "", contrast)) %>%
+  #mutate(immunization = gsub("post-", "", immunization)) %>%
+  arrange(desc(immunization), desc(order)) %>%
+  mutate(roworder = row_number()) %>%
+  mutate(immunization = factor(immunization)) %>%
+  mutate(time_post = factor(hours)) %>%
+  mutate(time_post = reorder(time_post, rev(order))) %>%
+  mutate(contrast_clean = gsub(" immunization_", " (", contrast)) %>%
+  mutate(contrast_clean = gsub("hours", "hours)", contrast_clean)) %>%
+  mutate(contrast_clean = gsub("weeks", "weeks)", contrast_clean)) 
+
+gsea_barplot_func <- function(gsea_df, title = NULL){
+  df <- gsea_df 
+  topScale <- max(abs(df$NES))
+  colorLS <- colorRampPalette(colors = c("blue", "white", "red"))(500)
+  p <- ggplot(df, aes(x = reorder(immunization, roworder), y = NES, fill = time_post)) + 
+        #geom_bar(stat='identity', width=0.8, position = "identity") +
+        geom_bar(stat = "identity", width=0.8, position = position_dodge(width = .85)) +
+        theme_bw() + 
+        xlab("Immunization") + 
+        ylab("CREB1 NES (Normalized Enrichment Score) vs prevaccination") + 
+        ggtitle(title) + 
+        theme(axis.title = element_text(family = "Times", face="bold", size=12)) +
+           theme(axis.text = element_text(family = "Times", face="bold", size=8)) +
+        geom_hline(yintercept=0, color = "gray", size=0.5) +
+        #scale_fill_gradientn(colours = colorLS, limits = c(-topScale, topScale)) +
+        coord_flip() 
+  return(p)
+}
+
+
+CREB1_post_barplot <- gsea_barplot_func(CREB_contrasts)
+
+
+pdf("figure/CHEA_CREB_post_vs_prevaxx.pdf")
+CREB1_post_barplot
+dev.off()
+
+
+
+lm22_NES_matr <- do.call('rbind', lapply(names(fgsea_analysis_post), function(x){
+      df <- fgsea_analysis_post[[x]]$LM22$output %>%
+            as.data.frame() %>%
+            #mutate(NES = ifelse(pval > 0.05, 0, NES)) %>%
+            dplyr::select(pathway, NES) %>%
+            mutate(condition = x)
+})) %>%
+  spread(pathway, NES) %>%
+  column_to_rownames("condition") %>%
+  as.matrix()
+
+
+lm22_HM <- pheatmap(lm22_NES_matr, 
+                    color = colorRampPalette(colors =c("blue","white", "red"))(100),
+                    breaks = seq(-max(abs(lm22_NES_matr), na.rm = T),
+                                 max(abs(lm22_NES_matr), na.rm = T), length.out = 101),
+                    angle_col = 45,
+                    cluster_rows = F, width = 12, height = 9, cellwidth = 12,
+                    cellheight = 12, fontsize = 8,
+                    filename = "output/figures/LM22_heatmap_ALVAC-COMP.pdf")
+
+
+CREB_LE <- do.call('rbind', lapply(names(fgsea_analysis_post), function(x){
+    LE <- fgsea_analysis_post[[x]]$CHEA$output %>%
+            as.data.frame() %>%
+            filter(pathway == "CREB1") %>%
+            unnest(cols = leadingEdge) %>%
+            mutate(ledge = paste(leadingEdge, collapse = "; ")) %>%
+            mutate(pathway = paste(x)) %>%
+            dplyr::select(-leadingEdge) %>%
+            unique() %>%
+            dplyr::rename(leadingEdge = "ledge")
+           
+    
+    #gs <- GeneSet(LE, setName = x)
+    
+}))
+
+
+
+
+extract_superset_pvalues <- function(superset){
+  df <- summary(superset)$Table %>%
+          as.data.frame() %>%
+          dplyr::select(-Elements)
+  return(df)
+}
+
+
+
+
+res_CREB <- supertest(CREB_LE, n = 20412)
+
+res_CREB_p <- extract_superset_pvalues(res_CREB)
+
+write_tsv(res_CREB_p, "output/alvac_comp_LE_overlap_pvalues.txt")
+
+# pdf("output/figures/study36_chip-seq_overlap_test_circle_plot.pdf", width = 9)
+# plot(res_study35, sort.by="size", margin=c(2,2,2,8), color.scale.pos=c(0.85,1),
+#      legend.pos=c(0.9,0.15))
+# dev.off()
+
+
+pdf("output/figures/study36_chip-seq_overlap_test_bar_plot.pdf", width = 9)
+plot(res_study35, Layout="landscape", degree=2:4, sort.by="size", margin=c(0.5,8,1,2))
+dev.off()
+
+
+
+GeneSetCollection()
+#save(fgsea_analysis_titers,file = "gsea_analysis_titers_RV144.RData" )
+
+
+```
+
+```{r compute_ledge_jaccard}
+
+
+
+compute_ledge_jaccard <- function(fgsea_output, 
+                                       p_threshold = 0.05,
+                                       jaccard_threshold = 0.5) {
+  
+  
+  pathDF <- as.data.frame(fgsea_output) %>% 
+    filter(pval < p_threshold) 
+  #### enrichment map
+  # define nes (1 or -1)
+  # nes <- 1
+  # nes_check <- FALSE
+  outGS_list <- c()
+  # while(nes_check == FALSE){
+  #   if(nes == -1) {
+  #     leDF <- pathDF %>% dplyr::filter(NES < 0)
+  #   } else {
+  #     leDF <- pathDF %>% dplyr::filter(NES > 0)
+  #   }
+    leLS <- sapply(pathDF$pathway, simplify = F, USE.NAMES = T, function(x){
+      le <- pathDF %>% filter(pathway == x) %>%
+            separate_rows(leadingEdge, sep = "; ") %>%
+            .$leadingEdge
+      return(le)
+    })
+    #leLS <- leDF$leadingEdge 
+    
+    #names(leLS) <- leDF$pathway
+    
+    # calculate Jaccard index
+    gsDist <- sapply(leLS, function(gs1) {
+      gsDist <- sapply(leLS, function(gs2) {
+        gs1 <- gs1
+        gs2 <- gs2
+        jaccardIndex <- length(intersect(gs1, gs2))
+        jaccardIndex <- jaccardIndex /
+          (length(gs1) + length(gs2) - jaccardIndex)
+        return(value = jaccardIndex)
+      })
+      return(value = gsDist)
+    })
+    
+    out <- gsDist %>%
+          as.data.frame() %>%
+          rownames_to_column("source") %>%
+          gather(target, jaccard_index, -source) %>%
+          mutate(jaccard_distance = 1 - jaccard_index)
+    
+    # filter based on jaccard threshold
+    #gsMin <- gsDist
+    
+    
+    return(out)
+    
+   
+}
+
+CREB_LE_contrasts <- do.call("rbind", lapply(combn(CREB_LE$pathway, m = 2, simplify = F),
+                                             function(x){
+                                               
+                     out  <- data.frame("source" = x[1],
+                               "target" = x[2]) %>%
+                              mutate(combo = paste(source, target, sep = "__"))
+}))
+
+
+
+CREB_LE_alvac_comp_jaccard_net_table <- compute_ledge_jaccard(CREB_LE) %>%
+        mutate(combo = paste(source, target, sep = "__")) %>%
+        filter(combo %in% CREB_LE_contrasts$combo)
+        
+write_tsv(CREB_LE_alvac_comp_jaccard_net_table, 
+          path = "output/data/CREB_LE_alvac_comp_jaccard_net_table.txt")
+
+
+CREB_LE_alvac_comp_jaccard_node_table <- CREB_contrasts %>%
+                                        dplyr::select(contrast, NES, hours, immunization,
+                                                      contrast_clean) %>%
+                                        dplyr::rename(node = "contrast") 
+
+
+write_tsv(CREB_LE_alvac_comp_jaccard_node_table, 
+          path = "output/data/CREB_LE_alvac_comp_jaccard_node_table.txt")
+
+
+core_CREB_LE <- CREB_LE %>%
+                mutate(dir = sign(NES)) %>%
+                mutate(dir = ifelse(dir == 1, "UP", "DOWN")) %>%
+                separate_rows(leadingEdge, sep = "; ") %>%
+                group_by(dir) %>%
+                mutate(n_pathway = n_distinct(pathway)) %>%
+                ungroup() %>%
+                group_by(dir, leadingEdge) %>%
+                mutate(n_pathway_ledge = n_distinct(pathway)) %>%
+                ungroup() %>%
+                dplyr::select(leadingEdge, n_pathway, n_pathway_ledge, dir) %>%
+                unique() %>%
+                filter(n_pathway == n_pathway_ledge)
+write_tsv(core_CREB_LE, "output/data/ALVAC_COMP_coreCREB1_genes.txt")
+
+
+CREB_LE_gene_distribution <- CREB_LE %>%
+                  separate_rows(leadingEdge, sep = "; ") %>%
+                  mutate(direction = ifelse(sign(NES) == 1, "pos", "neg")) %>%
+                  group_by(leadingEdge, direction) %>%
+                  mutate(n_contrasts = n_distinct(pathway),
+                         contrasts = paste(pathway, collapse = "; ")) %>%
+                  ungroup() %>%
+                  mutate(temp = paste(n_contrasts, contrasts, sep = "___")) %>%
+                  dplyr::select(leadingEdge, temp, direction) %>%
+                  unique() %>%
+                  spread(direction, temp) %>%
+                  gather(direction, temp, -leadingEdge) %>%
+                  mutate(temp = ifelse(is.na(temp), "0___-", temp)) %>%
+                  spread(direction, temp) %>%
+                  separate(neg, into = c("Neg:n_contrasts", "Neg:contrasts"), sep = "___") %>%
+                  separate(pos, into = c("Pos:n_contrasts", "Pos:contrasts"), sep = "___") 
+
+writexl::write_xlsx(x = CREB_LE_gene_distribution, path = "output/data/ALVAC_COMP-CREB1_leadgineEdge-overlap.xlsx")
+
+
+
+
+
+
+
+
+
+CREB_jaccard_matrix_full <- compute_ledge_jaccard(CREB_LE) %>%
+          dplyr::select(-jaccard_distance) %>%
+          spread(target, jaccard_index) %>%
+          column_to_rownames("source") %>%
+          as.matrix()
+hclust_jaccard <- pheatmap(CREB_jaccard_matrix_full)
+
+CREB_jaccard_matrix_full <- CREB_jaccard_matrix_full[row.names(CREB_jaccard_matrix_full[hclust_jaccard$tree_row[["order"]],]),
+                                                     colnames(CREB_jaccard_matrix_full[,hclust_jaccard$tree_col[["order"]]])]
+
+CREB_jaccard_matrix <- as.data.frame(CREB_jaccard_matrix_full) %>%
+                      rownames_to_column("source") %>%
+                      gather(target, jaccard, -source) %>%
+                      mutate(rank_source = match(source , row.names(CREB_jaccard_matrix_full))) %>%
+                      mutate(rank_target = match(target , row.names(CREB_jaccard_matrix_full))) %>%
+                      mutate(jaccard = ifelse(rank_target > rank_source, "", jaccard)) %>%
+                      dplyr::select(-rank_source, -rank_target) %>%
+                      spread(target, jaccard) %>%
+                      column_to_rownames("source")
+
+CREB_jaccard_matrix <- CREB_jaccard_matrix[row.names(CREB_jaccard_matrix_full),
+                                                     colnames(CREB_jaccard_matrix_full)]
+
+
+write.table(CREB_jaccard_matrix, file = "output/data/ALVAC-Comp-jaccard-matrix.txt")
+```
+
+
+
+```{r CREB }
+
+CREB1_ledge_comb <- unique(unlist(lapply(names(fgsea_analysis_post)[c(14:17)], function(x){
+      ledge <- fgsea_analysis_post[[x]]$CHEA$output %>%
+                filter(pathway == "CREB1") %>%
+                filter(pval < 0.05) %>%
+                unnest(cols = "leadingEdge") %>%
+                .$leadingEdge
+})))
+CREB1_exprs_mat <- exprs(eset_ave) %>%
+                    as.data.frame() %>%
+                    rownames_to_column("ProbeID")  %>%
+                    gather(sample, value, -ProbeID) %>%
+                    inner_join(., fData(eset_ave), by = "ProbeID") %>%
+                    filter(BROAD.Gene.Symbol %in% CREB1_ledge_comb) %>%
+                    dplyr::select(BROAD.Gene.Symbol, sample, value ) %>%
+                    spread(sample, value) %>%
+                    column_to_rownames("BROAD.Gene.Symbol") %>%
+                    as.matrix()
+
+CREB_hm_annot <- CREB1_exprs_mat %>%
+                  as.data.frame() %>%
+                  gather(Sample, value) %>%
+                  dplyr::select(-value) %>%
+                  unique() %>%
+                  filter(!grepl("Euth", Sample)) %>%
+                  mutate(condition = gsub("ALVACComp_P..._", "", Sample)) %>%
+                  mutate(immunization = ifelse(condition == "prevax", "prevaccination", 
+                                               gsub("_.*", "", condition))) %>%
+                  mutate(immunization = gsub("post", "post-", immunization)) %>%
+                  mutate(Timepoint = gsub(".*_", "", condition)) %>%
+                  mutate(Timepoint = ifelse(grepl("[0-9]+h", Timepoint), gsub("h", " hours", Timepoint), Timepoint)) %>%
+                  mutate(Timepoint = ifelse(Timepoint == "prevax", "D0", Timepoint)) %>%
+                  arrange(immunization, Timepoint) %>%
+                  mutate(rown_total = row_number()) %>%
+                  group_by(immunization) %>%
+                  mutate(rown = row_number()) %>%
+                  mutate(gap = ifelse(rown == max(rown), rown_total, NA )) %>%
+                  column_to_rownames("Sample")
+
+
+
+                  
+
+
+CREB_CHEA <- getGmt(geneset_list$CHEA)
+CREB_CHEA <- CREB_CHEA[names(CREB_CHEA) == "CREB1"]
+CREB1_CHEA_mat <-  gsva(expr = CREB1_exprs_mat, gset.idx.list = CREB_CHEA, method = "zscore" )
+                    
+CREB1_ledge_hm_scaled <- t(scale(t(CREB1_exprs_mat)))
+CREB1_ledge_hm_scaled <- CREB1_ledge_hm_scaled[,row.names(CREB_hm_annot)]
+
+
+generateBreaks <- function(min, max, length = 500, assymetric_colors =T, 
+                           colorvector = c("blue", "white", "red")){
+    colorLS <- colorRampPalette(colors = colorvector)(length)
+    extremes <- c(min, max)
+    which_min <- which.min(abs(extremes))
+    which_min <- which.min(abs(extremes))
+   # return(which_top)
+    half  <- length / 2
+    top <- max(abs(extremes))
+    low <- min(abs(extremes))
+    breaks_raw <- c(seq(-abs(top), 0, length.out = half)[c(1:half-1)], seq(0, abs(top), length.out = half+1))
+    breaks_top <- which.min(abs(breaks_raw - extremes[which.max(abs(extremes))])) 
+    breaks_min <- which.min(abs(breaks_raw - extremes[which.min(abs(extremes))])) 
+    #return(c(breaks_min, breaks_top))
+    return(list("breaks" = breaks_raw[c(breaks_min):breaks_top],
+                "colors" = colorLS[c(breaks_min):breaks_top]))
+  
+}
+
+
+
+myBreaks <- generateBreaks(min = min(CREB1_ledge_hm_scaled) , max = max(CREB1_ledge_hm_scaled))
+
+
+CREB_hm <- pheatmap(mat = CREB1_ledge_hm_scaled, 
+                  annotation_col = CREB_hm_annot[c("Timepoint", "immunization")],
+                  show_rownames = F,
+                  show_colnames = F,
+                  cluster_cols = F,
+                  breaks = myBreaks$breaks,
+                  color = myBreaks$colors,
+                gaps_col = CREB_hm_annot[!is.na(CREB_hm_annot$gap),]$gap)
+
+
+
+
+```
+
+
+
+```{r ORA _func}
+
+
+hypergeom_ORA <- function(genelist, geneset_ids, N){
+  intersect <- intersect(genelist, geneset_ids)
+  m <- length(genelist)
+  N <- N
+  n <- N - m
+  k <- length(geneset_ids)
+  x <- length(intersect)
+
+  
+  if(x > 0 ){
+    p.value <- phyper(q = x - 1 , m = m, n = n, k = k, lower.tail = F)
+    out <- data.frame("p.value" = p.value, "leadingEdge" = paste(intersect, collapse = "; "),
+                      "n_genes" = x)
+  } else { 
+    out <- data.frame("p.value" = 1, "leadingEdge" = "",
+                      "n_genes" = "")
+   
+    }
+  
+  return(out)
+}
+
+ORA_test <- function(toptable, geneID_column = "SYMBOL",  pthr = 0.05, padj = 1, genesetColl,
+                     directional = T){
+  require(checkmate)
+  coll = makeAssertCollection()
+  assertDataFrame(toptable, null.ok = F, .var.name = "toptable",
+              add = coll)
+  if(!class(genesetColl) %in% c('GeneSetCollection', 'GeneSet')){
+    coll$push("variable 'genesetColl' not of the GeneSetCollection or GeneSet class from GSEABase. Provide a valid object.")
+   
+  }
+
+  assertCharacter(geneID_column, null.ok = F, max.len = 1, 
+                  .var.name = "geneID_column", add = coll)
+  assertNumeric(pthr, lower = 0, upper = 1, null.ok = F, .var.name = "pthr", max.len = 1,
+              add = coll)
+  assertNumeric(padj, lower = 0, upper = 1, null.ok = F, .var.name = "padj", max.len = 1,
+              add = coll)
+  assertLogical(directional, null.ok = F, .var.name = "directional", max.len = 1,
+              add = coll)
+  
+  reportAssertions(coll)
+  
+  if(length(intersect(colnames(toptable), y = geneID_column)) == 0){
+    coll$push(paste("Column ", geneID_column, 
+                    " not found in toptable. Please provide valid column", sep = ""))
+  }
+  
+  reportAssertions(coll)
+  
+  if(length(intersect(toptable[[geneID_column]], y = unique(unlist(geneIds(genesetColl), 
+                                                                   use.names = F)))) == 0){
+    coll$push('Gene Identifiers not found in Geneset Collection')
+  }
+  reportAssertions(coll)
+  
+  
+  
+  df <- toptable %>%
+        as.data.frame(.) %>%
+        dplyr::rename(geneid_coll = geneID_column) %>%
+        filter(!geneid_coll %in%  c("", "---")) %>%
+        filter(!is.na(geneid_coll)) %>%
+        separate_rows(geneid_coll, sep = " /// ") %>%
+        mutate(DIR = ifelse(sign(logFC) == 1, "UP", "DN"))
+ 
+  filt <- df %>%
+          filter(P.Value < pthr) %>%
+          filter(adj.P.Val < padj) 
+  
+  idLS <- list()
+  if(directional){
+    idLS[["UP"]] <- unique(filt[filt$DIR == "UP",][["geneid_coll"]])
+    idLS[["DN"]] <- unique(filt[filt$DIR == "DN",][["geneid_coll"]])
+  } else {
+    idLS[["ALL"]] <- unique(filt[["geneid_coll"]])
+  }
+          
+  ORA_out <- do.call("rbind", lapply(names(idLS), function(x){
+  #ORA_out <- sapply(names(idLS), simplify = F, USE.NAMES = T, function(x){
+  #    out <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(genesetColl)[[1]],
+  #                   N = length(unique(df$geneid_coll)))
+  #   
+  # })
+      if(class(genesetColl) == "GeneSetCollection"){
+        #out <- sapply(names(genesetColl), simplify = F, USE.NAMES = T, function(y){
+        out <- do.call("rbind", lapply(names(genesetColl), function(y){
+          gs <- genesetColl[names(genesetColl) == y]
+          ins <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(gs)[[1]],
+                       N = length(unique(df$geneid_coll))) %>%
+                mutate(direction = x,
+                       pathway = y) %>%
+                        dplyr::select(pathway, direction, everything())
+        #})
+        #out <- do.call("rbind", lapply(names(genesetColl), function(y){
+          
+        }))
+      } else {
+
+        out <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(genesetColl)[[1]],
+                       N = length(unique(df$geneid_coll))) %>%
+                mutate(direction = x,
+                       pathway = names(genesetColl)[[1]]) %>%
+                        dplyr::select(pathway, direction, everything())
+    }
+  }))
+  #})  
+  
+  ORA_out <- ORA_out %>% 
+              mutate(padj = p.adjust(p.value)) %>%
+              arrange(p.value) %>%
+              mutate(logp = ifelse(direction == "DN", log10(p.value),
+                                   -log10(p.value))) %>%
+              dplyr::select(pathway, direction, p.value, padj, logp, n_genes, leadingEdge )
+
+  return(ORA_out)
+}
+
+
+
+
+
+```
+
+
+
+```{r ORA_CREB}
+
+ORA_LS <- sapply(names(topTables_postvax)[grepl("post", names(topTables_postvax))],
+                 simplify = F, USE.NAMES = T, function(x){
+                   ORA_test(topTables_postvax[[x]], genesetColl = CREB_CHEA,
+                            geneID_column = "BROAD.Gene.Symbol", padj = 1)
+                   
+                 })
+
+
+CREB_ORA_df <- do.call("rbind", lapply(names(ORA_LS), function(x){
+    out <- ORA_LS[[x]] %>%
+             mutate(contrast = x) %>%
+            dplyr::select(contrast, everything()) %>%
+            dplyr::select(-leadingEdge, -n_genes ) 
+        
+}))
+
+write_tsv(CREB_ORA_df,path = "output/data/ORA_ALVAC_COMP_CREB1_CHEA.txt" )
+
+
+```
+```{r export_tables}
+
+lapply(names(fgsea_analysis_post), function(x){
+  lS <- fgsea_analysis_post[[x]]
+  df <- do.call("rbind", lapply(intersect(names(lS), c("CHEA", "c2", "c3","c5", "interferome")), function(y){
+    out <- lS[[y]]$output %>%
+            filter(pval <0.05) %>%
+            unnest(cols = "leadingEdge") %>%
+            mutate(tmp = leadingEdge) %>%
+            group_by(pathway) %>%
+            mutate(leadingEdge = paste(tmp, collapse = "; ")) %>%
+            ungroup() %>%
+            dplyr::select(-tmp) %>% unique() %>%
+            mutate(geneset = y)
+  }))
+  write_tsv(df, path = paste("../data_tables/gsea/ALVAC_Comp/", x, ".txt", sep = ""))
+})
+
+
+
+lapply(names(topTables_postvax)[grepl("immunization", names(topTables_postvax))], function(x){
+  df <- topTables_postvax[[x]]  %>%
+             arrange(desc(t)) %>%
+            mutate(rank = row_number())
+  write_tsv( df, path = paste("../data_tables/contrasts/ALVAC_Comp/", x,".txt", sep = ""))
+})
+
+
+
+```
+
+
+```{r make GEOArchive}
+pData_geo = pData(esetRaw) %>%
+            dplyr::select(-`idat file`) %>%
+            filter(`Sample name` %in% colnames(eset))
+
+geoLS <- list("raw" = as.data.frame(exprs(esetRaw[row.names(eset),pData_geo$`Sample name`])) %>%
+                      rownames_to_column("ID_REF"),
+              "normalized" = as.data.frame(exprs(eset[,pData_geo$`Sample name`])) %>%
+                        rownames_to_column("ID_REF"),
+              "pData" = pData_geo)
+
+writexl::write_xlsx(geoLS, path = "output/geo_file.xlsx")
+
+
+```
+
+
