@@ -1,0 +1,462 @@
+---
+title: "gsea_functions"
+author: "Adam Pelletier"
+date: "8/20/2019"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(grid))
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+```{r fgsea_func}
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+
+fgsea_function_topT <- function(x,gmtfile, method = "logp", p_thr = 0.05, n.perm = 10000, maxSize = 500, minSize = 15) {
+  ###function to do preranked geneset enrichment using fgsea using a given 1. topTable input and 2.gmt file path
+  if(!method %in% c("logp", "T")){
+    stop("Invalid method for fgsea_function. Options are 'logp' or 'T")
+  }
+  topTable_all <- x %>% as.data.frame(.) %>% 
+            rownames_to_column("Illumina_ID") %>% 
+            filter(BROAD.Gene.Symbol != "") %>%
+            group_by(BROAD.Gene.Symbol) %>%
+            summarise(mean_logFC = gm_mean(logFC),
+                      mean_t = mean(t),
+                      mean_P.value = mean(P.Value)) %>%
+            #filter(!duplicated(BROAD.Gene.Symbol)) %>%
+            ungroup(.) %>%
+            column_to_rownames("BROAD.Gene.Symbol")
+  if(method == "logp") {
+      topTable_all$rank_metric <- sign(topTable_all$mean_t) *   -log(shrunk_deseq_output$mean_P.Value)
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  } else if(method == "T") {
+    topTable_all$rank_metric <- topTable_all$mean_t 
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  }
+  pathways <- gmtPathways(gmtfile)
+  fgseaRes<-fgsea(pathways,ranks_set,minSize=minSize,maxSize=maxSize,nperm=n.perm)
+  fgseaRes<- fgseaRes[fgseaRes$pval <=p_thr,]
+  fgseaRes<-fgseaRes[order(fgseaRes$padj),]
+  fgseaRes<-fgseaRes[!is.na(fgseaRes$padj),]
+  return(fgseaRes)
+}
+
+fgsea_function_topT_probeIDs <- function(x,gmtfile, method = "logp", p_thr = 0.05, n.perm = 10000, maxSize = 500, minSize = 15,
+                                probe_select) {
+  ###function to do preranked geneset enrichment using fgsea using a given 1. topTable input and 2.gmt file path
+  if(!method %in% c("logp", "T")){
+    stop("Invalid method for fgsea_function. Options are 'logp' or 'T")
+  }
+  topTable_all <- x %>% as.data.frame(.) %>% 
+            rownames_to_column("Illumina_ID") %>% 
+            filter(BROAD.Gene.Symbol != "") %>%
+            filter(Illumina_ID %in% probe_select) %>%
+            # group_by(BROAD.Gene.Symbol) %>%
+            # summarise(mean_logFC = gm_mean(logFC),
+            #           mean_t = mean(t),
+            #           mean_P.value = mean(P.Value)) %>%
+            # #filter(!duplicated(BROAD.Gene.Symbol)) %>%
+            # ungroup(.) %>%
+            column_to_rownames("BROAD.Gene.Symbol")
+  if(method == "logp") {
+      topTable_all$rank_metric <- sign(topTable_all$t) *   -log(shrunk_deseq_output$P.Value)
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  } else if(method == "T") {
+    topTable_all$rank_metric <- topTable_all$t 
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  }
+  pathways <- gmtPathways(gmtfile)
+  fgseaRes<-fgsea(pathways,ranks_set,minSize=minSize,maxSize=maxSize,nperm=n.perm)
+  fgseaRes<- fgseaRes[fgseaRes$pval <=p_thr,]
+  fgseaRes<-fgseaRes[order(fgseaRes$padj),]
+  fgseaRes<-fgseaRes[!is.na(fgseaRes$padj),]
+  return(fgseaRes)
+}
+
+fgsea_output_topT <- function(fgsea_vector,
+                         eset_contrast,
+                         outcome,
+                         geneset_list,
+                         geneset,
+                         fileDir,
+                         method = "shLFC",
+                         p_thr = 0.05, 
+                         maxSize = 500,
+                         duplicates = "average",
+                         probe_select) {
+  if(length(fgsea_vector[[outcome]]) == 0) {
+    fgsea_list <- list()
+  } else {
+    fgsea_list <- fgsea_vector[[outcome]]
+  }
+  fgsea_list[[geneset]]$geneset_file <- geneset_list[[geneset]]
+  if(duplicates == "average"){
+    fgsea_list[[geneset]]$output <- fgsea_function_topT(eset_contrast, geneset_list[[geneset]], method = method,
+                                                      p_thr = p_thr, maxSize = maxSize)
+  } else if(duplicates == "probe_ids"){
+    fgsea_list[[geneset]]$output <- fgsea_function_topT_probeIDs(eset_contrast, geneset_list[[geneset]], method = method,
+                                                      p_thr = p_thr, maxSize = maxSize, probe_select = probe_select)
+  }
+  
+  write.csv(as.data.frame(fgsea_list[[geneset]]$output[,c(1:7)]), 
+          file=file.path(fileDir,paste(outcome,geneset,method,"gsea.csv", sep="_")), 
+          quote = FALSE)
+  fgsea_vector[[outcome]] <- fgsea_list
+  return(fgsea_vector)
+}
+
+```
+
+```{r gsea_hm}
+gsea_hm <- function(fgsea_object,
+                    contrasts,
+                    geneset,
+                    pval_thr,
+                    filename, 
+                    subset = c(),
+                    max_gs = 10,
+                    clusterRowsGap = FALSE,
+                    orderRows = "cluster",
+                    annotation_col = NA, 
+                    annotation_colors = NA,
+                    annotation_dict = NA,
+                    labels_col = NULL,
+                    show_colnames = TRUE,
+                    angle_col = "90",
+                    gaps_col = NULL,
+                    output = "heatmap",
+                    cellheight = 6,
+                    cellwidth = 6,
+                    fontsize = 6,
+                    height = NA,
+                    width = NA,
+                    custom_scale = NA,
+                    topn = NULL
+                    ){
+  pathways <- list()
+  df_list <- list()
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    }
+    
+    pathways[[i]] <- df_temp
+    
+  }
+  total_pathway <- unique(unlist(pathways))
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      dplyr::select(pathway,NES) %>%
+      mutate(contrast = i)
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      mutate(contrast = i)
+    }
+    
+    df_list[[i]] <- df_temp
+  }
+  merged_df <- do.call("rbind", df_list) %>% spread(contrast, NES)
+
+  if(dim(merged_df)[1] > 0){
+    temp_df <- merged_df %>%
+            gather(contrast,NES,-pathway) %>%
+            mutate(NES = ifelse(is.na(NES), 0 , NES)) %>%
+            mutate(NES = as.numeric(NES)) %>%
+            group_by(pathway) %>%
+            mutate(NESrank = ifelse(orderRows == "median", median(NES), mean(NES))) %>%
+            ungroup(.) 
+        
+        order <- temp_df %>%
+              dplyr::select(pathway, NESrank) %>%
+              unique(.) %>%
+              arrange(desc(NESrank)) %>%
+              .$pathway 
+        
+        temp_df <- temp_df %>%
+          dplyr::select(-NESrank) %>%
+          spread(contrast,NES) %>%
+          arrange(match(pathway, order)) %>%
+          column_to_rownames("pathway") 
+        
+        if(!is.null(labels_col)){
+          temp_df <- temp_df %>%
+                t(.) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("condition") %>%
+                inner_join(., labels_col %>% rownames_to_column("new_name"), by = "condition") %>%
+                dplyr::select(-condition) 
+          
+          df <- temp_df[c(1:dim(temp_df)[2]-1)]
+
+          row.names(df) <- as.character(temp_df[[dim(temp_df)[2]]])
+          df <- t(df) %>%
+                as.matrix(.)
+        } else {
+          df <- as.matrix(temp_df)
+        }
+     
+    if(is.numeric(topn)){
+      df <- df[c(1:topn),]
+    }    
+        
+    if(output == "matrix"){
+      return(df)
+    } else {
+      
+      if(!is.na(annotation_col)){
+        #print(annotation_col)
+        ann_df <- as.data.frame(annotation_col) %>% rownames_to_column("condition")
+        row.names(ann_df) <- ann_df$condition
+        annotation_col_filt <- ann_df[row.names(ann_df) %in% colnames(df),]
+  
+        #print(annotation_col_filt)
+        colorAnnotations_filt <- annotation_colors[names(annotation_colors) %in% colnames(annotation_col_filt)]
+       
+        annotation_col_filt$condition <- NULL
+        
+        colorAnnotations_filt2 <- sapply(names(colorAnnotations_filt), simplify = F, USE.NAMES = T, function(x){
+                inp <- colorAnnotations_filt[[x]]
+                out <- inp[names(inp) %in% as.character(unlist(annotation_col_filt, use.names = F))]
+                out <- setNames(as.character(out), names(out))
+                return(out)
+          })
+        
+     
+      } else {
+        annotation_col_filt <- NA
+        colorAnnotations_filt2 <- NA
+        
+      }     
+      
+      paletteLength <- 500
+      colorLS <- colorRampPalette(colors = c("blue", "cyan",
+                                             "white",
+                                            "yellow", "red"))(paletteLength)
+    
+      # myBreaks <- c(seq(min(df), 0, length.out=ceiling(paletteLength/2) + 1),
+      #             seq(max(df)/paletteLength, max(df), length.out=floor(paletteLength/2)))
+      
+      if(dim(df)[1] > 1){
+        clusterFlag <- TRUE
+      } else {
+        clusterFlag <- FALSE
+      }
+      
+      
+      if(is.na(custom_scale)){
+        topScale <- max(abs(min(df)),abs(max(df)))
+         myBreaks <- seq(-topScale, topScale, length.out=paletteLength)
+      } else {
+         myBreaks <- seq(min(custom_scale), max(custom_scale), length.out=paletteLength) 
+      }
+      
+  
+     
+      hm_object <- list()
+      if (clusterRowsGap == FALSE) {
+        if(orderRows == "cluster"){
+          p <- pheatmap(df,
+                 main = paste("GSEA_",geneset, sep=""),
+                      color = colorLS,
+                      fontsize= fontsize,
+                      cellheight = cellheight,
+                      cellwidth = cellwidth,
+                      show_colnames = show_colnames,
+                      annotation_names_row = FALSE,
+                      cluster_cols = FALSE,
+                      cluster_rows = clusterFlag,
+                      breaks = myBreaks,
+                      treeheight_row = 2,
+                 filename = filename,
+                 annotation_col = annotation_col_filt,
+                 annotation_colors = colorAnnotations_filt2,
+                 angle_col = angle_col,
+                 gaps_col = gaps_col,
+                 height = height,
+                 width = width,
+                 annotation_names_col = F)
+          hm_object$clusterRow <- "none"
+        } else {
+          p <- pheatmap(df,
+                 main = paste("GSEA_",geneset, sep=""),
+                      color = colorLS,
+                      fontsize= fontsize,
+                      cellheight = cellheight,
+                      cellwidth = cellwidth,
+                      show_colnames = show_colnames,
+                      annotation_names_row = FALSE,
+                      cluster_cols = FALSE,
+                      cluster_rows = FALSE,
+                      breaks = myBreaks,
+                      treeheight_row = 2,
+                 filename = filename,
+                 annotation_col = annotation_col_filt,
+                 annotation_colors = colorAnnotations_filt2,
+                 angle_col = angle_col,      
+                 gaps_col = gaps_col,
+                 height = height,
+                 width = width,
+                 annotation_names_col = T )
+          hm_object$clusterRow <- "none"
+        }
+        
+      } else {
+        p_temp <- pheatmap(df)
+        cluster_annot <- heatmap_gap_clustering(p_temp, K.max = 15)
+        dev.off()
+        tiff(file = file.path(figureDir,paste(filename,".tiff", sep="")), family=journal_font)
+        p <- pheatmap(df,
+                 main = paste("GSEA_",geneset, sep=""),
+                      color = colorLS,
+                      fontsize= 6,
+                      cellheight = 6,
+                      cellwidth = 6,
+                      show_colnames = show_colnames,
+                      annotation_names_row = FALSE,
+                      cluster_cols = FALSE,
+                      breaks = myBreaks,
+                      annotation_row = cluster_annot$df["clusterID"])
+        dev.off()
+    
+    
+        hm_object$clusterRow <- cluster_annot
+      }
+      hm_object$plot <- p
+      return(hm_object)
+    }
+  }
+}
+
+```
+
+```{r buildColorpalette}
+buildColorPalette <- function(palettes = c(), length){
+    info_df <- brewer.pal.info %>%
+                rownames_to_column("palette") %>%
+                filter(palette %in% palettes) %>%
+                arrange(match(palette, palettes)) %>%
+                mutate(cumSum_cols = cumsum(maxcolors)) %>%
+                mutate(include = as.character(ifelse(cumSum_cols >= length, 0, 1))) %>%
+                group_by(include) %>%
+                mutate(count = row_number()) %>%
+                ungroup(.) %>%
+                rowid_to_column("rank") %>%
+                filter(include == "1" | count == 1) 
+    
+    if(length > sum(info_df$maxcolors)){
+      stop(paste("Length of vector too long for selected palettes. Selected palettes have a combined length of ",
+                 sum(info_df$maxcolors),", while the required length is of ", length , sep = ""),
+                  call. = FALSE)
+    } 
+    
+    paletteList <-  split(info_df, f = info_df$palette)
+    run_length <- length
+    col_vector <- c()
+    for(i in names(paletteList)){
+       ncol <- paletteList[[i]]$maxcolors
+
+       if(run_length - ncol > 0){
+         cols <- brewer.pal(ncol ,i)
+         run_length <- run_length - ncol
+         col_vector <- c(col_vector, cols)
+       } else {
+         cols <- brewer.pal(run_length , i)
+         col_vector <- c(col_vector, cols[c(1:run_length)])
+       }
+    }
+    return(col_vector)
+}
+
+
+
+
+```
+
+```{r SLEA func}
+# SLEA function (Sample Level Enrichment Analysis) function(z-score per sample)
+doSLEA <- function(expressionSet, geneSet) {
+            # scale expression
+            exprsMat  <- expressionSet
+            # extract expression of leGenes of each geneset
+            comm <- intersect(geneSet, rownames(exprsMat))
+            gsDF <- exprsMat[comm, ]
+            # calculate mean expression per sample
+            gsM <- colMeans(gsDF)
+            # extract random genes of size of the geneSet from full probeset and calculate mean
+            # and perform this for 'n' permutations
+            nperm <- lapply(1:1000, function(j) {
+                    # set seed for every permutation
+                    set.seed(j)
+                    rGSDF <- exprsMat[sample.int(nrow(exprsMat), length(comm)), ]
+                    rGSM <- colMeans(rGSDF)
+                    return(value = rGSM)
+                })
+            permDF <- do.call(rbind, nperm)
+            zscore <- (gsM - colMeans(permDF)) / apply(permDF,2,sd)
+            sleaDF <- zscore %>% as.data.frame()
+            return(value = sleaDF)
+        }
+
+
+
+
+```

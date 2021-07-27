@@ -1,0 +1,2481 @@
+---
+title: "downstream_analysis_p162"
+author: "Adam Pelletier"
+date: "7/24/2019"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(janitor))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(glmnet))
+library(broom)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+
+```{r }
+
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+
+inputDir <- setup_dir("input")
+outDir <- setup_dir("output")
+
+genesetsDir <- setup_dir("../input/genesets")
+figureDir <- setup_dir(file.path(outDir,"figures"))
+dataOutDir <- setup_dir(file.path(outDir,"data"))
+
+
+```
+
+
+```{r load titer_values}
+
+                 
+titers_mucosa <- readxl::read_excel("input/TABLE Results MRV144 corrected 11.11.14 - CBK_modANP24-07-19.xls", 
+                             col_names = TRUE, sheet = "mucosa AB") %>%
+            gather(titer_outcome, titer, -Animal, -Vaccine) %>%
+            filter(!grepl("pre_vax", titer_outcome)) %>%
+            filter(grepl("ALVAC.*ALUM", Vaccine)) %>%
+            mutate(Animal = gsub("[*]", "", Animal)) %>%
+            mutate(titer_outcome = gsub(" ", "_", titer_outcome)) 
+            
+                             
+                 
+titers <- readxl::read_excel("input/TABLE Results MRV144 corrected 11.11.14 - CBK_modANP24-07-19.xls", 
+                             col_names = TRUE, sheet = "Ab") %>%
+            #clean_names() %>%
+            #dplyr::select(-...5 ) %>%
+            gather(titer_outcome, titer, -Animal, -Vaccine) %>%
+            filter(!grepl("pre_vax", titer_outcome)) %>%
+            filter(grepl("ALVAC.*ALUM", Vaccine)) %>%
+            mutate(Animal = gsub("[*]", "", Animal)) %>%
+            mutate(titer_outcome = gsub(" ", "_", titer_outcome)) %>%
+            mutate(titer_outcome = paste("Serum_", titer_outcome, sep = "")) %>%
+            bind_rows(titers_mucosa) %>%
+            #mutate(titer = log(titer, base = 10)) %>%
+            mutate(titer = ifelse(is.na(titer), 0, titer)) %>%
+            spread(titer_outcome, titer) %>%
+            mutate(adjuvant = "Alum") 
+            
+            
+            
+```
+
+
+
+
+```{r titer_plot}
+titer_df_plot <- titers %>%
+                  gather(outcome, titer, -Animal, -Vaccine) %>%
+                  mutate(Timepoint = ifelse(grepl("[Pp]re|[Pp]os", outcome), str_extract(outcome, "[Pp]re|[Pp]os"), "NO")) %>%
+                  filter(Timepoint )
+
+
+monkey_select <- read_excel("input/P162 challenge data for CREB correlation.xlsx", col_names = FALSE) %>%
+                  dplyr::rename(Monkey_select = "...1") %>%
+                  dplyr::rename(n_challenges = "...2")
+
+
+
+
+```
+
+
+
+```{r average_probes}
+
+probe_gene_select <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Ill_Probe") %>%
+                gather(sampleID, value, -Ill_Probe) %>%
+                inner_join(.,fData(eset) %>% rownames_to_column("Ill_Probe"), by  ="Ill_Probe") %>%
+                dplyr::select(sampleID, value, Ill_Probe, SYMBOL ) %>%
+                filter(SYMBOL != "---") %>%
+                group_by(Ill_Probe) %>%
+                mutate(mean_probe = mean(value)) %>%
+                ungroup() %>%
+                separate_rows(SYMBOL, sep = " /// ") %>%  
+                group_by(SYMBOL) %>%
+                mutate(probe_max = ifelse(max(mean_probe, na.rm = T) == mean_probe, 1, 0)) %>%
+                ungroup() %>%
+                filter(probe_max == 1) %>%
+                mutate(combo = paste(Ill_Probe, SYMBOL, sep = "__")) %>%
+                dplyr::select(Ill_Probe, SYMBOL, combo) %>%
+                unique()
+
+unsup_MDS <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("ProbeID") %>%
+                gather(sampleID, value, -ProbeID) %>%
+                inner_join(.,fData(eset), by  ="ProbeID") %>%
+                inner_join(., pData(eset), by  = c("sampleID" =  "Sample name")) %>%
+                column_to_rownames("sampleID")
+
+
+pca_unsup_raw <- prcomp(t(exprs(eset)))
+
+
+pca_unsup_annot_prelim <- pca_unsup_raw$x %>%
+                   as.data.frame() %>%
+                   rownames_to_column("sampleID") %>%
+                   inner_join(., pData(eset), by  = c("sampleID" =  "Sample name")) %>%
+                   mutate(arm = gsub(".*gp120/", "", `vaccination group`)) 
+
+unsup_MDS_p_raw <- ggplot(pca_unsup_annot_prelim, aes( x= PC1, y = PC2, color =  arm, shape = `vaccination time`)) + 
+               geom_point() + 
+                theme_bw() 
+
+pdf("output/figures/PCA_raw.pdf")
+unsup_MDS_p_raw
+dev.off()
+donor_filter <- pca_unsup_annot_prelim %>%
+                filter(PC1 > 50) %>%
+                .$donor
+sample_filter <- pData(eset) %>%
+                 filter(!donor %in% donor_filter) %>%
+                 .$`Sample name`
+
+pca_unsup <- prcomp(t(exprs(eset)[,colnames(exprs(eset)) %in% sample_filter])) 
+pca_unsup_annot <- pca_unsup$x %>%
+                   as.data.frame() %>%
+                   rownames_to_column("sampleID") %>%
+                   inner_join(., pData(eset), by  = c("sampleID" =  "Sample name")) %>%
+                   mutate(arm = gsub(".*gp120/", "", `vaccination group`)) %>%
+                   mutate(condition = paste(arm, `vaccination time`, sep  = "_")) %>%
+                   mutate(prevax = ifelse(`vaccination time` == "pre-vaccination", "prevax", "postvaxx"))
+
+unsup_MDS_p <- ggplot(pca_unsup_annot, aes( x= PC1, y = PC2, color =  condition, shape= prevax)) + 
+               geom_point() + 
+                theme_bw() +  
+                stat_ellipse(type = "norm", level = 0.5)
+
+pdf("output/figures/PCA_annoted_filtered.pdf")
+unsup_MDS_p
+dev.off()
+
+
+creb_genes <- row.names(fData(eset_ALVAC_adj)[fData(eset_ALVAC_adj)$BROAD.Gene.Symbol %in%
+                                  geneIds(CHEA_CREB)[[1]],])
+
+creb_genes <- row.names(fData(eset_ALVAC_adj)[fData(eset_ALVAC_adj)$BROAD.Gene.Symbol %in%
+                  (fgsea_analysis_post_adj$`Alum_post-3rd immunization`$CHEA$output  %>%
+                    filter(pathway == "CREB1") %>%
+                    unnest(cols = 'leadingEdge') %>%
+                    .$leadingEdge),])
+pca_creb_adj <- prcomp(t(exprs(eset_BL_ave)[creb_genes,colnames(eset_ALVAC_adj)])) 
+pca_creb_adj_annot <- pca_creb_adj$x %>%
+                   as.data.frame() %>%
+                   rownames_to_column("sampleID") %>%
+                   inner_join(., pData(eset_ALVAC_adj) %>% rownames_to_column("Sample name"),
+                              by  = c("sampleID" =  "Sample name")) 
+
+unsup_MDS_adj_p <- ggplot(pca_creb_adj_annot, 
+                          aes( x= PC1, y = PC2, color =  adjuvant, shape= vaccination_time)) + 
+               geom_point() + 
+                theme_bw() +  
+                stat_ellipse(type = "norm", level = 0.5)
+
+pdf("output/figures/PCA_annoted_filtered_adjuvant_CREB.pdf")
+unsup_MDS_adj_p
+dev.off()
+
+```
+
+
+
+```{r test}
+#load slim's eset
+
+load("~/Downloads/p162.eset.RData")
+
+
+pData_test <- pData(eset)
+fData_test <- fData(eset) 
+
+eset_ave_exprs <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("IlmnID") %>%
+                gather(sampleID, value, -IlmnID) %>%
+                inner_join(., fData(eset) , by  ="IlmnID") %>%
+                dplyr::select(sampleID, value, IlmnID, SYMBOL) %>%
+                filter(SYMBOL != "---") %>%
+                filter(sampleID %in% sample_filter) %>%
+                filter(!is.na(SYMBOL)) %>%
+                group_by(IlmnID) %>%
+                mutate(mean_probe = mean(value)) %>%
+                ungroup() %>%
+                #separate_rows(SYMBOL, sep = " /// ") %>%
+                group_by(SYMBOL) %>%
+                mutate(probe_max = ifelse(max(mean_probe, na.rm = T) == mean_probe, 1, 0)) %>%
+                ungroup() %>%
+                filter(probe_max == 1) %>%
+                # group_by(sampleID, BROAD.Gene.Symbol) %>%
+                # mutate(mean = mean(value)) %>%
+                # #filter()
+                # 
+                # mutate(row_no = row_number()) %>%
+                # filter(row_no == 1) %>%
+                #ungroup(.) %>%
+                #dplyr::select(sampleID, SYMBOL, mean) %>%
+                dplyr::select(sampleID, IlmnID, value) %>%
+                spread(sampleID, value) %>%
+                column_to_rownames("IlmnID")
+
+
+
+
+fData_ave2 <- fData(eset) %>%
+              rownames_to_column("ID") %>%
+              filter(ID %in% row.names(eset_ave_exprs)) %>%
+              #filter(ID %in% row.names(eset_ave_exprs2)) %>%
+              column_to_rownames("ID")
+
+
+
+eset_ave_exprs <- eset_ave_exprs[row.names(fData_ave2),]
+
+
+pData_ave <- pData(eset) %>%
+              rownames_to_column("sampleID") %>%
+              filter(sampleID %in% sample_filter) %>%
+              arrange(`vaccination time`) %>%
+              column_to_rownames("sampleID")
+
+eset_ave_exprs <- eset_ave_exprs[row.names(pData_ave)]
+##eset_ave_exprs2 <- eset_ave_exprs2[row.names(pData_ave)]
+
+
+eset_ave <- ExpressionSet(assayData   = as.matrix(eset_ave_exprs),
+                         phenoData   = AnnotatedDataFrame(pData_ave),
+                         featureData = AnnotatedDataFrame(fData_ave2))
+
+```
+
+
+```{r ave}
+
+
+
+
+
+eset_ave_exprs <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("ProbeID") %>%
+                gather(sampleID, value, -ProbeID) %>%
+                inner_join(., fData(eset) , by  ="ProbeID") %>%
+                dplyr::select(sampleID, value, ProbeID, BROAD.Gene.Symbol ) %>%
+                filter(sampleID %in% sample_filter) %>%
+                filter(!is.na(BROAD.Gene.Symbol)) %>%
+                group_by(ProbeID) %>%
+                mutate(mean_probe = mean(value)) %>%
+                ungroup() %>%
+                group_by(BROAD.Gene.Symbol) %>%
+                mutate(probe_max = ifelse(max(mean_probe, na.rm = T) == mean_probe, 1, 0)) %>%
+                ungroup() %>%
+                filter(probe_max == 1) %>%
+                dplyr::select(sampleID, ProbeID, value) %>%
+                spread(sampleID, value) %>%
+                column_to_rownames("ProbeID")
+
+
+
+fData_ave2 <- fData(eset) %>%
+              rownames_to_column("ID") %>%
+              filter(ID %in% row.names(eset_ave_exprs)) %>%
+              mutate(BROAD.Gene.Symbol = SYMBOL) %>%
+              column_to_rownames("ID")
+
+
+
+eset_ave_exprs <- eset_ave_exprs[row.names(fData_ave2),]
+
+
+pData_ave <- pData(eset) %>%
+              rownames_to_column("sampleID") %>%
+              filter(sampleID %in% sample_filter) %>%
+              arrange(`vaccination time`) %>%
+              column_to_rownames("sampleID")
+
+eset_ave_exprs <- eset_ave_exprs[row.names(pData_ave)]
+
+
+
+eset_ave <- ExpressionSet(assayData   = as.matrix(eset_ave_exprs),
+                         phenoData   = AnnotatedDataFrame(pData_ave),
+                         featureData = AnnotatedDataFrame(fData_ave2))
+
+
+
+save(eset_ave, file = "eset_ave.RData")
+
+
+
+
+
+eset_BL_exprs <- exprs(esetBaselined) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("ProbeID") %>%
+                gather(sampleID, value, -ProbeID) %>%
+                inner_join(.,fData(esetBaselined) , by  ="ProbeID") %>%
+                dplyr::select(sampleID, value, ProbeID, BROAD.Gene.Symbol ) %>%
+                #filter(SYMBOL != "---") %>%
+                filter(!is.na(BROAD.Gene.Symbol)) %>%
+                filter(ProbeID %in% row.names(eset_ave)) %>%
+                filter(sampleID %in% sample_filter) %>%
+                # group_by(Ill_Probe) %>%
+                # mutate(mean_probe = mean(value)) %>%
+                # ungroup() %>%
+                # group_by(SYMBOL) %>%
+                # mutate(probe_max = ifelse(max(mean_probe) == mean_probe, 1, 0)) %>%
+                # ungroup() %>%
+                # filter(probe_max == 1) %>%
+                # group_by(sampleID, SYMBOL) %>%
+                # mutate(mean = mean(value)) %>%
+                # mutate(row_no = row_number()) %>%
+                # filter(row_no == 1) %>%
+                # ungroup(.) %>%
+                #dplyr::select(sampleID, SYMBOL, value) %>%
+                dplyr::select(sampleID, ProbeID, value) %>%
+                spread(sampleID, value) %>%
+                column_to_rownames("ProbeID")
+
+fData_ave_BL <- fData(esetBaselined) %>%
+              rownames_to_column("ID") %>%
+              filter(ID %in% row.names(eset_BL_exprs)) %>%
+              column_to_rownames("ID")
+#eset_BL_exprs <- eset_BL_exprs[colnames(exprs(esetBaselined))]
+
+
+pData_ave_BL <- pData(esetBaselined) %>%
+              rownames_to_column("sampleID") %>%
+              filter(sampleID %in% sample_filter) %>%
+              arrange(`vaccination time`) %>%
+              column_to_rownames("sampleID")
+
+
+eset_BL_exprs <- eset_BL_exprs[row.names(fData_ave_BL),]
+eset_BL_exprs <- eset_BL_exprs[row.names(pData_ave_BL)]
+eset_BL_ave <- ExpressionSet(assayData   = as.matrix(eset_BL_exprs),
+                         phenoData   = AnnotatedDataFrame(pData_ave_BL),
+                         featureData = AnnotatedDataFrame(fData_ave_BL))
+
+
+
+save(eset_BL_ave, file = "esetBaselined_averaged.RData")
+
+
+
+
+
+```
+
+
+
+
+```{r pre_postvaxx_alvac}
+
+#pData_time  <- pData(eset_ave)[pData(eset_ave)$donor %in% titers$Animal,] %>% 
+pData_time  <- pData(eset_ave) %>% 
+                      as.data.frame(.) %>%
+                      #inner_join(.,titers, by = c("donor" = "Animal")) %>%
+                      dplyr::rename(vaccination_time = `vaccination time`) %>%
+                      # mutate(vaccination_time = factor(vaccination_time, 
+                      #                          levels = c("pre-vaccination", "post-1st immunization",
+                      #                                     "post-3rd immunization" ))) %>%
+                      mutate(arm = gsub(".*gp120/", "", `vaccination group`)) %>%
+                      mutate(vaccination_time = gsub("-| ", "_", vaccination_time)) %>%
+                      mutate(timepoint_arm = paste(arm, vaccination_time, sep = "__")) %>%
+                      filter(`Sample name` %in% sample_filter) %>%
+                      #mutate(donor = donor) %>%
+                      column_to_rownames("Sample name")
+
+eset_ALVAC <- eset_ave[,row.names(pData_time)]
+pData(eset_ALVAC) <- pData_time
+
+
+
+save(eset_ALVAC, file = "eset_ALVAC.RData")
+
+
+
+
+
+fits_postvaxx_adj <- sapply(unique(pData_time$timepoint_arm[grepl("3rd",pData_time$timepoint_arm)]), simplify = F, 
+                            USE.NAMES = T, function(x){
+  arm_select <- gsub("__.*", "", x)
+  #print(arm)
+  print(x)
+  df <- pData_time %>%
+      rownames_to_column("sampleID") %>%
+      filter(arm == arm_select) %>%
+      filter(!grepl("1st", timepoint_arm)) %>%
+      mutate(donor = factor(donor)) %>%
+      arrange(desc(timepoint_arm))
+  
+   donor <- df$donor
+   pre_timepoints <- unique(df$timepoint_arm[grepl("pre", df$timepoint_arm)])
+   post_timepoints <- unique(df$timepoint_arm[!grepl("pre", df$timepoint_arm)])
+   timepoint_arm <- factor(df$timepoint_arm, levels = c(pre_timepoints, post_timepoints))
+   #return(post_timepoints)
+   
+   
+  #designMat <- model.matrix(~ 0+ donor + timepoint_arm)
+  designMat <- model.matrix(~ 0 + timepoint_arm)
+  colnames(designMat) <- gsub("timepoint_arm", "",colnames(designMat))
+  #colnames(designMat) <- gsub("donor", "",colnames(designMat))
+  rownames(designMat) <- df$sampleID
+  esetFilt <- eset_ALVAC[,df$sampleID]
+  fits <- lmFit(esetFilt,
+               design   = designMat)
+  
+  
+  cont <- paste(post_timepoints, "-", pre_timepoints, sep = "")
+  
+  #return(fits)
+  contrastMat <- makeContrasts(contrasts = cont, levels = fits$design)
+  # # return(contrastMat)
+  fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+  # fit2 <- eBayes(fit = fits)
+  fit2 <- eBayes(fit = fit2)
+  #return(fit2)
+  topTables <- sapply(post_timepoints, simplify = FALSE, USE.NAMES = TRUE, function(x){
+      #ind <- which(colnames(fits) == x)
+      top <- topTable(fit2, coef = 1, n = Inf) %>%
+               dplyr::select(ProbeID, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)  %>%
+               remove_rownames() %>%
+               #separate_rows(SYMBOL, sep = " /// ") %>%
+               #rownames_to_column("Ill_Probe") %>%
+               #mutate(Ill_Probe = gsub("[...].*", "", Ill_Probe)) %>%
+               # mutate(combo = paste(Ill_Probe, SYMBOL, sep = "__")) %>%
+               # filter(combo %in% probe_gene_select$combo) %>%
+               # dplyr::select(-combo) %>%
+               column_to_rownames("BROAD.Gene.Symbol")
+      return(top)
+      
+  })
+  out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTables" = topTables)
+  return(out)
+})
+
+
+fits_postvaxx <- sapply("post_1st_immunization", simplify = F, 
+                            USE.NAMES = T, function(x){
+  
+  #print(arm)
+
+  df <- pData_time %>%
+      rownames_to_column("sampleID") %>%
+      filter(!grepl("3rd", vaccination_time)) %>%
+      mutate(donor = factor(donor)) %>%
+      arrange(desc(vaccination_time))
+  print(df)
+  
+   donor <- df$donor
+   pre_timepoints <- unique(df$vaccination_[grepl("pre", df$vaccination_time)])
+   post_timepoints <- unique(df$vaccination_[!grepl("pre", df$vaccination_time)])
+   vaccination_timepoint <- factor(df$vaccination_time, levels = c(pre_timepoints, post_timepoints))
+   #return(post_timepoints)
+   print(length(pre_timepoints))
+   print(length(post_timepoints))
+   
+  designMat <- model.matrix(~ donor + vaccination_timepoint)
+ 
+  colnames(designMat) <- gsub("vaccination_timepoint", "",colnames(designMat))
+  colnames(designMat) <- gsub("donor", "",colnames(designMat))
+  rownames(designMat) <- df$sampleID
+  esetFilt <- eset_ALVAC[,df$sampleID]
+  fits <- lmFit(esetFilt,
+               design   = designMat)
+  
+  
+  cont <- paste(post_timepoints, "-", pre_timepoints, sep = "")
+  
+  #return(fits)
+  # contrastMat <- makeContrasts(contrasts = cont, levels = fits$design)
+  # return(contrastMat)
+  # fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+  fit2 <- eBayes(fit = fits)
+  
+  topTables <- sapply(post_timepoints, simplify = FALSE, USE.NAMES = TRUE, function(x){
+      #ind <- which(colnames(fits) == x)
+      top <- topTable(fit2, coef = x, n = Inf) %>%
+               dplyr::select(ProbeID, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)  %>%
+               remove_rownames() %>%
+               #separate_rows(SYMBOL, sep = " /// ") %>%
+               #rownames_to_column("Ill_Probe") %>%
+               #mutate(Ill_Probe = gsub("[...].*", "", Ill_Probe)) %>%
+               # mutate(combo = paste(Ill_Probe, SYMBOL, sep = "__")) %>%
+               # filter(combo %in% probe_gene_select$combo) %>%
+               # dplyr::select(-combo) %>%
+               column_to_rownames("BROAD.Gene.Symbol")
+      return(top)
+      
+  })
+  out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTables" = topTables)
+  return(out)
+})
+
+save(fits_output, file = "postvaxx_vs_prevaxx.RData")
+load(file = "data/postvaxx_vs_prevaxx.RData")
+
+
+```
+
+
+```{r fits_genemania_contrast}
+
+genemania_contrasts <- do.call("rbind", lapply(names(fits_postvaxx), function(x){
+  fits_adj <- fits_postvaxx[[x]]
+  genemania <- do.call("rbind", lapply(names(fits_adj$topTables), function(y){
+            df<- fits_adj$topTables[[y]] %>%
+                  as.data.frame() %>%
+                  rownames_to_column("BROAD.Gene.Symbol") %>%
+                  filter(BROAD.Gene.Symbol %in% genemania_list$genename) %>%
+                  mutate(contrast = y) 
+            return(df)
+  }))
+  return(genemania)
+}))
+
+
+summ_genemania_contrast <- genemania_contrasts %>%
+                            mutate(upcheck = ifelse(t > 0, "up", "down")) %>%
+                            group_by(contrast, upcheck) %>%
+                            summarise(n = n()) %>%
+                            ungroup()
+                            
+genemania_contrasts_challenge <- split_fits_titers$Challenge_no$topTable$Challenge_no %>%
+                                    filter(BROAD.Gene.Symbol %in% genemania_list$genename) %>%
+                                    mutate(n = n()) 
+
+
+
+genemania_adj_contrast <- fits_output_adjuvant$topTables$`Alum_post-3rd immunization` %>%
+                               rownames_to_column("BROAD.Gene.Symbol") %>%
+                               filter(BROAD.Gene.Symbol %in% genemania_list$genename) %>%
+                              filter(P.Value < 0.05) %>%
+                              mutate(enriched = ifelse(sign(t) == 1, "Alum", "MF59")) %>%
+                              split(., f =.$enriched)
+
+
+```
+
+
+```{r adjuvant_contrast}
+
+pData_time_adj  <- pData(eset_BL_ave) %>% 
+                      as.data.frame(.) %>%
+                      #inner_join(.,titers, by = c("donor" = "Animal")) %>%
+                      dplyr::rename(vaccination_time = `vaccination time`) %>%
+                      filter(vaccination_time == "post-3rd immunization") %>%
+                      # mutate(vaccination_time = factor(vaccination_time, 
+                      #                          levels = c("post-1st immunization",
+                      #                                     "post-3rd immunization" ))) %>%
+                      mutate(adjuvant = gsub(".*gp120/", "", `vaccination group`)) %>%
+                      mutate(adjuvant_trt = factor(paste(adjuvant, vaccination_time, sep = "_"))) %>%
+                      mutate(adjuvant_trt = factor(adjuvant_trt, levels = rev(levels(adjuvant_trt)))) %>%
+                      
+                      #left_join(., monkey_select, by = c("donor" = "Monkey_select") ) %>%
+                      #mutate(donor = ifelse(donor %in% monkey_select$Monkey_select, donor, NA)) %>%
+                      #dplyr::filter(donor %in% monkey_select$Monkey_select) %>%
+                      mutate(donor = factor(donor)) %>%
+                      column_to_rownames("Sample name")
+
+eset_ALVAC_adj <- eset_BL_ave[,row.names(pData_time_adj)]
+pData(eset_ALVAC_adj) <- pData_time_adj
+
+
+
+save(eset_ALVAC_adj, file = "eset_ALVAC_adjuvant.RData")
+
+
+
+
+
+
+              
+adjuvant_trt <- pData_time_adj$adjuvant_trt
+donor <- pData_time_adj$donor
+
+
+designMat <- model.matrix(~  adjuvant_trt)
+colnames(designMat) <- gsub("adjuvant_trt", "",colnames(designMat))
+#colnames(designMat) <- gsub("donor", "",colnames(designMat))
+rownames(designMat) <- sampleNames(eset_ALVAC_adj)
+
+fits <- lmFit(eset_ALVAC_adj,
+             design   = designMat)
+  
+
+time_contrasts <- colnames(fits)[grepl("immunization", colnames(fits))]
+
+time_contrasts_concat <- paste(time_contrasts, "-MF59", sep ="")
+
+
+fit2 <- eBayes(fit = fits)
+postpre_topTables <- sapply(time_contrasts, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ind <- which(colnames(fits) == x)
+    top <- topTable(fit2, coef = ind, n = Inf) %>%
+             dplyr::select(ProbeID, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val) %>%
+              remove_rownames() %>%
+              column_to_rownames("BROAD.Gene.Symbol")
+    return(top)
+})
+
+fits_output_adjuvant <- list("fits_prepost" = fits, "fits2_prepost" = fit2, "topTables" = postpre_topTables)
+
+save(fits_output_adjuvant, file = "postvaxx_adjuvants.RData")
+load(file = "data/postvaxx_vs_prevaxx.RData")
+
+
+```
+
+```{r prepost mf59}
+
+flag <- pData(eset) %>%
+  select(`Sample name`,
+         donor,
+        `vaccination time`) %>%
+  spread(`vaccination time`, `Sample name`) %>%
+  gather(`Vaccination time`, postvax, -donor, -`pre-vaccination`)
+esetBaselined <- eset[, flag$postvax]
+exprs(esetBaselined) <- exprs(esetBaselined) -
+    exprs(eset[, flag$"pre-vaccination"])
+# save postvax-prevax expression
+save(esetBaselined, file = file.path(workDir, "output/p162.esetBaselined.RData"))
+
+load(file.path(workDir, "output/p162.esetBaselined.RData"))
+
+
+pData_time_mf59  <- pData(eset_ave) %>% 
+                      as.data.frame(.) %>%
+                      filter(grepl("MF59", `vaccination group`)) %>%
+                      dplyr::rename(vaccination_time = `vaccination time`) %>%
+                      mutate(vaccination_time = factor(vaccination_time, 
+                                               levels = c("pre-vaccination", "post-1st immunization",
+                                                          "post-3rd immunization" ))) %>%
+                      #left_join(., monkey_select, by = c("donor" = "Monkey_select") ) %>%
+                      #mutate(donor = ifelse(donor %in% monkey_select$Monkey_select, donor, NA)) %>%
+                      #dplyr::filter(donor %in% monkey_select$Monkey_select) %>%
+                      mutate(donor = factor(donor)) %>%
+                      column_to_rownames("Sample name")
+
+eset_ALVAC_MF59 <- eset_ave[,row.names(pData_time_mf59)]
+pData(eset_ALVAC_MF59) <- pData_time_mf59
+
+
+
+save(eset_ALVAC_MF59, file = "eset_ALVAC_MF59.RData")
+
+
+
+
+
+
+              
+vaccination_time <- pData_time_mf59$vaccination_time
+donor <- pData_time_mf59$donor
+
+
+designMat <- model.matrix(~ 0 + donor + vaccination_time)
+colnames(designMat) <- gsub("vaccination_time", "",colnames(designMat))
+colnames(designMat) <- gsub("donor", "",colnames(designMat))
+rownames(designMat) <- sampleNames(eset_ALVAC_MF59)
+
+fits <- lmFit(eset_ALVAC_MF59,
+             design   = designMat)
+  
+
+time_contrasts <- colnames(fits)[grepl("immunization", colnames(fits))]
+
+time_contrasts_concat <- paste(time_contrasts, "-pre", sep ="")
+
+
+fit2 <- eBayes(fit = fits)
+postpre_topTables <- sapply(time_contrasts, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ind <- which(colnames(fits) == x)
+    top <- topTable(fit2, coef = ind, n = Inf) %>%
+             dplyr::select(ProbeID, SYMBOL, logFC, t, P.Value, adj.P.Val)
+    return(top)
+})
+
+fits_output_MF59 <- list("fits_prepost" = fits, "fits2_prepost" = fit2, "topTables" = postpre_topTables)
+
+save(fits_output_MF59, file = "postvaxx_vs_prevaxx_MF59.RData")
+load(file = "data/postvaxx_vs_prevaxx_MF59.RData")
+
+
+```
+
+
+
+
+
+```{r titer_corr}
+
+# pData_corr  <- pData(eset_BL_ave)[pData(eset_BL_ave)$donor %in% titers$Animal,] %>% 
+#                       as.data.frame(.) %>%
+#                       inner_join(.,titers, by = c("donor" = "Animal")) %>%
+#                       dplyr::rename(vaccination_time = `vaccination time`) %>%
+#                       dplyr::rename(Challenge_no  = "number of SIV challenge to infection") %>%
+#                       mutate(Challenge_no = as.numeric(ifelse(Challenge_no == "neg", 11, Challenge_no))) %>%
+#                       mutate(CV2_AB_pos = ifelse(`rV2_E543-3_Post-_Vax` > 0, "CV2_pos", "CV2_neg")) %>%
+#                       mutate(Challenge_no  = ifelse(CV2_AB_pos == "CV2_pos", Challenge_no , NA)) %>%
+#                       #mutate(CV2_AB_pos = ifelse(donor %in% monkey_select$Monkey_select, "CV2_pos", "CV2_neg")) %>%
+#                       gather(titer_out, value, colnames(titers)[3:11]) %>%
+#                       #mutate(value = ifelse(CV2_AB_pos == "CV2_pos", value, NA)) %>%
+#                       spread(titer_out, value) %>%
+#                       mutate(donor = factor(donor)) %>%
+#                       filter(vaccination_time == "post-1st immunization") %>%
+#                       mutate(CV2_AB_pos = factor(CV2_AB_pos)) %>%
+#                       unique(.) %>%
+#                       gather(outcome, status, colnames(titers)[c(3:11)]) %>%
+#                       mutate(status = as.numeric(status)) %>%
+#                       spread(outcome, status) %>%
+#                       as.tibble(.)
+  pData_corr  <- pData(esetBaselined)[pData(esetBaselined)$donor %in% titers$Animal,] %>% 
+                      as.data.frame(.) %>%
+                      inner_join(.,titers, by = c("donor" = "Animal")) %>%
+                      dplyr::rename(vaccination_time = `vaccination time`) %>%
+                      dplyr::rename(Challenge_no  = "number of SIV challenge to infection") %>%
+                      mutate(Challenge_no = as.numeric(ifelse(Challenge_no == "neg", 11, Challenge_no))) %>%
+                      mutate(CV2_AB_pos = ifelse(`rV2_E543-3_Post-_Vax` > 0, "CV2_pos", "CV2_neg")) %>%
+                      mutate(Challenge_no  = ifelse(CV2_AB_pos == "CV2_pos", Challenge_no , NA)) %>%
+                      #mutate(CV2_AB_pos = ifelse(donor %in% monkey_select$Monkey_select, "CV2_pos", "CV2_neg")) %>%
+                      gather(titer_out, value, colnames(titers)[3:11]) %>%
+                      mutate(value = log1p(value)) %>%
+                      #mutate(value = ifelse(CV2_AB_pos == "CV2_pos", value, NA)) %>%
+                      spread(titer_out, value) %>%
+                      mutate(donor = factor(donor)) %>%
+                      filter(vaccination_time == "post-3rd immunization") %>%
+                      mutate(CV2_AB_pos = factor(CV2_AB_pos)) %>%
+                      unique(.) %>%
+                      gather(outcome, status, colnames(titers)[c(3:11)]) %>%
+                      mutate(status = as.numeric(status)) %>%
+                      spread(outcome, status) %>%
+                      mutate(tmp = `Sample name`) %>%
+                      column_to_rownames("tmp")
+
+
+
+row.names(pData_corr) <- pData_corr$`Sample name`
+
+eset_ALVAC_titer <- esetBaselined[,pData_corr$`Sample name`]
+pData(eset_ALVAC_titer) <- pData_corr
+
+
+
+save(eset_ALVAC_titer, file = "eset_ALVAC_titer_corr.RData")
+
+
+
+
+list_outcomes <- c("r_gp130_SIVmac", "rSIVsm_cV2_PostPre", "rV2_E543-3_Post-_Vax", "rV2_E543-3_Pre-Vax",
+                   "Serum_IgG_SIVmac251_CV2_post", "Serum_IgG_SIVsmE543_CV2_post" , "SIVmac_rIgG_cV2_Pos-Vax",
+                   "SIVmac_rIgG_cV2_PostPre", "SIVmac_rIgG_cV2_Pre-Vax", "Challenge_no", "CV2_AB_pos")
+
+concat_outcomes <- as.vector(outer(unique(pData(eset_ALVAC_titer)$vaccination_time), list_outcomes, paste, sep=":"))
+# list_outcomes <- c("r_gp130_SIVmac", "rSIVsm_cV2_PostPre", "rV2_E543-3_Post-_Vax", "rV2_E543-3_Pre-Vax",
+#                    "Serum_IgG_SIVmac251_CV2_post", "Serum_IgG_SIVsmE543_CV2_post" , "SIVmac_rIgG_cV2_Pos-Vax",
+#                    "SIVmac_rIgG_cV2_PostPre")
+
+split_fits_titers <- sapply(list_outcomes, simplify = FALSE, USE.NAMES = TRUE, function(x){
+  # timepoint <- str_split(x, pattern = ":")[[1]][1]
+  # outcome_var <- str_split(x, pattern = ":")[[1]][2]
+  outcome_var <- x
+
+  flag <- pData(eset_ALVAC_titer) 
+  #         
+  # 
+  # eset_filt <- eset_ALVAC_titer[,flag]
+  # pData_tit <- pData(eset_filt) %>%
+  pData_tit <- pData(eset_ALVAC_titer) %>%
+                rownames_to_column("row") %>%
+                dplyr::rename(outcome = outcome_var) %>%
+                filter(!is.na(outcome)) %>%
+                column_to_rownames("row")
+  
+  # eset_temp <- eset_filt[,pData_tit$`Sample name`]
+  eset_temp <- eset_ALVAC_titer[,pData_tit$`Sample name`]
+  outcome <- pData_tit$outcome
+
+  
+ 
+  if(outcome_var == "CV2_AB_pos"){
+
+    designMat <- model.matrix(~0 + outcome )
+    colnames(designMat) <- gsub("outcome", outcome_var, colnames(designMat))
+    colnames(designMat) <- gsub("CV2_AB_pos", "", colnames(designMat))
+
+  } else {
+    designMat <- model.matrix(~ 0 + outcome)
+    colnames(designMat) <- gsub("outcome", outcome_var, colnames(designMat))
+
+  }
+
+  
+  rownames(designMat) <- sampleNames(eset_temp)
+  #return(designMat)
+  fits <- lmFit(eset_temp,
+               design   = designMat)
+  if(outcome_var == "CV2_AB_pos"){
+  
+    contrastMat <- makeContrasts(contrasts = "CV2_pos-CV2_neg", levels = fits$design)
+    fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+    fit2 <- eBayes(fit = fit2)
+  } else {
+    fit2 <- eBayes(fit = fits)
+  }
+
+    
+  DEG_table <- sapply(colnames(fit2), simplify = FALSE, USE.NAMES = TRUE, function(z){
+    ind <- which(colnames(fit2) == z)
+    top <- topTable(fit2, coef = ind, n = Inf) %>%
+             dplyr::select(ProbeID, BROAD.Gene.Symbol ,AveExpr,SYMBOL, logFC, t, P.Value, adj.P.Val) #%>%
+        
+              
+             #separate_rows(SYMBOL, sep = " /// ")
+    return(top)
+    })
+    out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTable" = DEG_table)
+    return(out)
+  })
+  
+
+
+
+```
+
+
+
+```{r fgsea_func}
+
+fgsea_function_topT <- function(x,gmtfile, method = "logp", p_thr = 0.05, n.perm = 10000, maxSize = 500, minSize = 15) {
+  ###function to do preranked geneset enrichment using fgsea using a given 1. topTable input and 2.gmt file path
+  if(!method %in% c("logp", "T")){
+    stop("Invalid method for fgsea_function. Options are 'logp' or 'T")
+  }
+  topTable_all <- x %>% as.data.frame(.) %>% 
+            rownames_to_column("tmp") %>% 
+            filter(!SYMBOL %in%  c("", "---")) %>%
+            group_by(SYMBOL) %>%
+            # summarise(mean_t = max(t),
+            #           mean_P.value = min(P.Value)) %>%
+            # filter(!duplicated(SYMBOL)) %>%
+            filter(P.Value == min(P.Value)) %>%
+            ungroup(.) %>%
+            column_to_rownames("SYMBOL")
+  if(method == "logp") {
+      topTable_all$rank_metric <- sign(topTable_all$t) *   -log(shrunk_deseq_output$P.Value)
+      
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  } else if(method == "T") {
+    
+    topTable_all$rank_metric <- topTable_all$t 
+    
+      topTable_all <- topTable_all[order(-topTable_all$rank_metric),] 
+      ranks <- topTable_all
+      ranks_set <- setNames(ranks$rank_metric, row.names(ranks))
+  }
+  pathways <- gmtPathways(gmtfile)
+  fgseaRes<-fgsea(pathways,ranks_set,minSize=minSize,maxSize=maxSize,nperm=n.perm)
+  fgseaRes<- fgseaRes[fgseaRes$pval <=p_thr,]
+  fgseaRes<-fgseaRes[order(fgseaRes$padj),]
+  fgseaRes<-fgseaRes[!is.na(fgseaRes$padj),]
+  return(fgseaRes)
+}
+
+fgsea_output_topT <- function(fgsea_vector,
+                         eset_contrast,
+                         outcome,
+                         geneset_list,
+                         geneset,
+                         fileDir,
+                         method = "shLFC",
+                         p_thr = 0.05, 
+                         maxSize = 500) {
+  if(length(fgsea_vector[[outcome]]) == 0) {
+    fgsea_list <- list()
+  } else {
+    fgsea_list <- fgsea_vector[[outcome]]
+  }
+  fgsea_list[[geneset]]$geneset_file <- geneset_list[[geneset]]
+  fgsea_list[[geneset]]$output <- fgsea_function_topT(eset_contrast, geneset_list[[geneset]], method = method,
+                                                      p_thr = p_thr, maxSize = maxSize)
+  #return(fgsea_list)
+  # write.csv(as.data.frame(fgsea_list[[geneset]]$output[,c(1:7)]), 
+  #         file=file.path(fileDir,paste(outcome,geneset,method,"gsea.csv", sep="_")), 
+  #         quote = FALSE)
+  fgsea_vector[[outcome]] <- fgsea_list
+  return(fgsea_vector)
+}
+
+
+
+```
+
+```{r NES_barchart}
+
+
+adjuvant_fgsea <- list("Alum" = fgsea_analysis_pre_post, "MF59" = fgsea_analysis_pre_post_MF59)
+
+creb_adjuvant_fgsea <- do.call("rbind", lapply(names(adjuvant_fgsea), function(x){
+    df <- adjuvant_fgsea[[x]]$`post-1st immunization`$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          mutate(pathway = x)
+    return(df)
+}))
+
+
+
+gpcr_adjuvant_fgsea <- do.call("rbind", lapply(names(adjuvant_fgsea), function(x){
+    df <- adjuvant_fgsea[[x]]$`post-1st immunization`$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          mutate(pathway = x)
+    return(df)
+}))
+
+
+pdf("output/figures/postvaxx_CREB1_adjuvants_NESbarplot.pdf", height = 2, width = 6)
+gsea_barplot_func(creb_adjuvant_fgsea, title = "Post-vaccination CREB1 induction", xlab = "Adjuvant", ylab = "CREB1 NES")
+dev.off()
+
+```
+
+```{r gsea_hm}
+gsea_hm <- function(fgsea_object,
+                    contrasts,
+                    geneset,
+                    pval_thr,
+                    filename, 
+                    subset = c(),
+                    max_gs = 10,
+                    clusterRowsGap = FALSE){
+  pathways <- list()
+  df_list <- list()
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(padj <= pval_thr) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      dplyr::slice(.,1:max_gs) %>%
+      .$pathway
+    }
+    
+    pathways[[i]] <- df_temp
+  }
+  total_pathway <- unique(unlist(pathways))
+  for(i in contrasts) {
+    index <- which(contrasts == i)
+    if(length(subset) == 0){
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      dplyr::select(pathway,NES) %>%
+      #dplyr::slice(.,1:max_gs) %>%
+      mutate(contrast = i)
+    } else {
+      df_temp <- fgsea_object[[i]][[geneset]][["output"]] %>%
+      as.data.frame(.) %>%
+      filter(pathway %in% total_pathway) %>%
+      filter(grepl(paste(subset, collapse="|"), pathway)) %>%
+      dplyr::select(pathway,NES) %>%
+      mutate(contrast = i)
+    }
+    
+    df_list[[i]] <- df_temp
+  }
+  merged_df <- do.call("rbind", df_list) %>% spread(contrast, NES)
+  if(dim(merged_df)[1] > 0){
+    df <- merged_df %>%
+    gather(contrast,NES,-pathway) %>%
+    mutate(NES = ifelse(is.na(NES), 0 , NES)) %>%
+    mutate(NES = as.numeric(NES)) %>%
+    spread(contrast,NES) %>%
+    column_to_rownames("pathway") %>%
+    as.matrix(.)
+  
+  
+  
+    paletteLength <- 500
+    colorLS <- colorRampPalette(colors = c("blue", "cyan",
+                                           "white",
+                                          "yellow", "red"))(paletteLength)
+  
+    # myBreaks <- c(seq(min(df), 0, length.out=ceiling(paletteLength/2) + 1),
+    #             seq(max(df)/paletteLength, max(df), length.out=floor(paletteLength/2)))
+    
+    if(dim(df)[1] > 1){
+      clusterFlag <- TRUE
+    } else {
+      clusterFlag <- FALSE
+    }
+    
+    
+    topScale <- max(abs(min(df)),abs(max(df)))
+    print(topScale)
+    myBreaks <- seq(-topScale, topScale, length.out=paletteLength)
+    hm_object <- list()
+    if (clusterRowsGap == FALSE) {
+      p <- pheatmap(df,
+               main = paste("GSEA_",geneset, sep=""),
+                    color = colorLS,
+                    fontsize= 6,
+                    cellheight = 6,
+                    cellwidth = 6,
+                    show_colnames = TRUE,
+                    annotation_names_row = FALSE,
+                    cluster_cols = FALSE,
+                    cluster_rows = clusterFlag,
+                    breaks = myBreaks,
+                    treeheight_row = 2,
+               filename = filename)
+      hm_object$clusterRow <- "none"
+    } else {
+      p_temp <- pheatmap(df)
+      cluster_annot <- heatmap_gap_clustering(p_temp, K.max = 15)
+      dev.off()
+      tiff(file = file.path(figureDir,paste(filename,".tiff", sep="")), family=journal_font)
+      p <- pheatmap(df,
+               main = paste("GSEA_",geneset, sep=""),
+                    color = colorLS,
+                    fontsize= 6,
+                    cellheight = 6,
+                    cellwidth = 6,
+                    show_colnames = TRUE,
+                    annotation_names_row = FALSE,
+                    cluster_cols = FALSE,
+                    breaks = myBreaks,
+                    annotation_row = cluster_annot$df["clusterID"])
+      dev.off()
+  
+  
+      hm_object$clusterRow <- cluster_annot
+    }
+    hm_object$plot <- p
+    return(hm_object)
+  }
+}
+
+```
+
+
+```{r genemania_geneset}
+
+genemania_genes <- genemania_list %>%
+                    separate_rows(genename, sep = "-") %>%
+                    .$genename %>%
+                    unique()
+
+genemania_study36_list <- list("genemania_study36_chemo_cyto" = genemania_genes)
+#GeneSet(geneIds=as.character(smpdb_df$HMDB.ID), setName="test", description="test2")
+genemania_study36_gs <- GeneSetCollection(list(GeneSet(setName = names(genemania_study36_list),  
+                                geneIds = genemania_study36_list$genemania_study36_chemo_cyto)))
+
+toGmt(genemania_study36_gs, con = "../input/genesets/genemania_study36.gmt")
+
+```
+
+
+```{r gsea_run_post vs pre vaxx, echo=FALSE}
+geneset_list <- list(c2 = file.path(genesetsDir,
+                                        "c2.all.v6.1.symbols.gmt.txt"),
+                     c3 = file.path(genesetsDir,
+                                        "c3.all.v6.1.symbols.gmt.txt"),
+                     CHEA = file.path(genesetsDir,
+                                        "CHEA-tf.gmt"),
+                     interferome = file.path(genesetsDir,
+                                        "interferome.isg.gmt"),
+                     c5 = file.path(genesetsDir,
+                                        "c5.all.v6.1.symbols.gmt.txt"), 
+                     genemania = file.path(genesetsDir,
+                                        "genemania_study36.gmt") ,
+                     c7 = file.path(genesetsDir, "c7.all.v6.1.symbols.gmt.txt"))
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_pre_post <- list()
+
+
+
+for(i in names(fits_postvaxx)){
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_pre_post  <- fgsea_output_topT(fgsea_analysis_pre_post ,
+                               eset_contrast = fits_postvaxx[[i]]$topTables[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_pre_post[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_pre_post[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+creb_test_le <- do.call("rbind", lapply(names(fgsea_analysis_pre_post), function(x){
+  df <- fgsea_analysis_pre_post[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        filter(pathway == "CREB1") %>%
+        mutate(contrast = x)# %>%
+        #unnest(cols = "leadingEdge")
+        #dplyr::select(-leadingEdge)
+  return(df)
+})) %>%
+  filter(contrast == "post_1st_immunization")
+
+
+
+
+
+test_ifna_ledge <- do.call("rbind", lapply(names(fgsea_analysis_pre_post), function(x){
+  df <- fgsea_analysis_pre_post[[x]]$c2$output %>%
+        as.data.frame() %>%
+        #filter(grepl("IFN|INTERFERON|CYTOKINE|TCELL|T_CELL", pathway)) %>%
+        filter(grepl("TCR|TCELL|T_CELL", pathway)) %>%
+        filter(pval < 0.05) %>%
+        #filter(pathway  == "REACTOME_INTERFERON_ALPHA_BETA_SIGNALING") %>%
+        mutate(contrast = x) %>%
+        dplyr::select(-leadingEdge)
+        #unnest(cols = leadingEdge)
+  return(df)
+})) %>%
+  filter(contrast == "MF59__post_3rd_immunization")
+
+save(fgsea_analysis_pre_post,file = "data/gsea_analysis_post_vs_prevaxx_p162.RData" )
+
+
+```
+
+
+```{r test expr}
+
+test_ifn <- eset_ave_exprs %>%
+  rownames_to_column("ProbeID") %>%
+  gather(sample, value, -ProbeID) %>%
+  inner_join(., fData(eset), by  ="ProbeID") %>%
+  filter(BROAD.Gene.Symbol %in% test_ifna_ledge$leadingEdge) %>%
+  filter(BROAD.Gene.Symbol %in% test_ifna_ledge$leadingEdge) %>%
+  dplyr::select(BROAD.Gene.Symbol, sample, value) %>%
+  filter(!grepl("3rd", sample)) %>%
+  spread(BROAD.Gene.Symbol, value) %>%
+  column_to_rownames("sample") %>%
+  as.matrix() %>%
+  scale(.) %>%
+  t()
+
+test_annot <- pData(eset_ave) %>%
+              rownames_to_column("sampleID") %>%
+              filter(sampleID %in% colnames(test_ifn)) %>%
+              dplyr::rename(vaccination_time = `vaccination time`) %>%
+              mutate(arm = gsub(".*gp120/", "", `vaccination group`)) %>%
+              column_to_rownames("sampleID")
+              
+
+
+colorRampPalette(c("blue", "white", "red"))(500)
+
+test_hm <- pheatmap(test_ifn,
+                    color = colorRampPalette(c("blue", "white", "red"))(500),
+                    annotation_col = test_annot[c("vaccination_time","arm")],
+                    show_colnames = F,
+                    filename = file.path(figureDir, "proinflamamtory_signature_genes.pdf"),
+                    clustering_method = "ward.D")
+         
+# 
+# gsea_barplot_func <- function(gsea_df, title = NULL, facets = F){
+#   df <- gsea_df 
+#   topScale <- max(abs(df$NES))
+#   colorLS <- colorRampPalette(colors = c("blue", "white", "red"))(500)
+#   p <- ggplot(df, aes(x = pathway, y = NES, fill = NES)) + 
+#         geom_bar(stat='identity', width=0.4, position = "identity") +
+#         theme_bw() + 
+#         xlab("Ab correlate") + 
+#         ylab("CREB1 NES (Normalized Enrichment Score)") + 
+#         ggtitle(title) + 
+#         theme(axis.title = element_text(family = "Times", face="bold", size=12)) +
+#            theme(axis.text = element_text(family = "Times", face="bold", size=8)) +
+#         geom_hline(yintercept=0, color = "gray", size=0.5) +
+#         scale_fill_gradientn(colours = colorLS, limits = c(-topScale, topScale)) +
+#         coord_flip() 
+#   if(facets == T){
+#     p <- p + facet_wrap(~facet, scales= "free")
+#   }
+#   return(p)
+# }
+
+
+postvaxx_barplots_CHEA <- do.call("rbind", lapply(names(fgsea_analysis_pre_post), function(x){
+  df <- fgsea_analysis_pre_post[[x]]$CHEA$output %>%
+        as.data.frame() %>% 
+        dplyr::select(-leadingEdge) %>%
+        rowid_to_column("rowid") %>%
+        mutate(contrast = x) %>%
+        mutate(keep = ifelse(rowid <=20, 1, 0)) %>%
+        mutate(keep = ifelse(pathway == "CREB1", 1, keep)) %>%
+        filter(keep == 1) %>%
+        mutate(facet = paste(contrast, "_vs_prevaxx", sep ="" ))
+  return(df)
+})) %>%
+  gsea_barplot_func(., facets = T )
+
+pdf(file.path(figureDir, "postvax_CHEA_NES_barplot.pdf"), width = 11, height = 7)
+postvaxx_barplots_CHEA
+dev.off()
+
+
+postvaxx_barplots_cytok <- do.call("rbind", lapply(names(fgsea_analysis_pre_post), function(x){
+  df <- fgsea_analysis_pre_post[[x]]$c2$output %>%
+        as.data.frame() %>% 
+        dplyr::select(-leadingEdge) %>%
+        filter(grepl("TCR|CYTOKINE|IFN|INTERFERON|CHEMOKINE|T_CELL", pathway)) %>%
+        rowid_to_column("rowid") %>%
+        mutate(contrast = x) %>%
+        mutate(keep = ifelse(rowid <=20, 1, 0)) %>%
+        filter(keep == 1) %>%
+        mutate(facet = paste(contrast, "_vs_prevaxx", sep ="" ))
+  return(df)
+})) %>%
+  gsea_barplot_func(., facets = T )
+
+pdf(file.path(figureDir, "postvax_cytok_NES_barplot.pdf"), width = 30, height = 7)
+postvaxx_barplots_cytok
+dev.off()
+
+
+```
+
+
+```{r post_prevaxx_figures}
+
+
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+
+
+
+  for(j in genesets_figs){
+    gsea_hm(fgsea_analysis_pre_post, 
+        contrasts = names(fgsea_analysis_pre_post),
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_p162","_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset
+                    )
+    
+    gsea_hm(fgsea_analysis_pre_post, 
+        contrasts = names(fgsea_analysis_pre_post),
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_p162",".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15
+                    )
+
+}
+
+
+
+
+
+
+
+```
+
+```{r gsea_run_post vs pre vaxx, echo=FALSE}
+geneset_list <- list(c2 = file.path(genesetsDir,
+                                        "c2.all.v6.1.symbols.gmt.txt"),
+                     c3 = file.path(genesetsDir,
+                                        "c3.all.v6.1.symbols.gmt.txt"),
+                     CHEA = file.path(genesetsDir,
+                                        "CHEA-tf.gmt"),
+                     interferome = file.path(genesetsDir,
+                                        "interferome.isg.gmt"))
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_titers <- list()
+
+geneset_list2 <- list(
+                     CHEA = file.path(genesetsDir,
+                                        "CHEA-tf.gmt"))
+
+
+for(i in names(split_fits_titers)){
+  
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_titers  <- fgsea_output_topT(fgsea_analysis_titers ,
+                               eset_contrast = split_fits_titers[[i]]$topTable[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+add <- c("CV2_AB_pos")
+for(i in add){
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_titers  <- fgsea_output_topT(fgsea_analysis_titers ,
+                               eset_contrast = split_fits_titers[[i]]$topTable[[1]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+add <- c("Challenge_no")
+for(i in add){
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_titers  <- fgsea_output_topT(fgsea_analysis_titers ,
+                               eset_contrast = split_fits_titers[[i]]$topTable[[1]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+save(fgsea_analysis_titers,file = "gsea_analysis_titers_p162.RData" )
+
+
+
+
+```
+
+```{r fgsea_postvaxx_adjuvants}
+fgsea_analysis_post_adj <- list()
+
+for(i in names(fits_output_adjuvant$topTables)){
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_post_adj  <- fgsea_output_topT(fgsea_analysis_post_adj ,
+                               eset_contrast = fits_output_adjuvant$topTables[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_post_adj[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_post_adj[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+
+```
+
+
+
+```{r explore CREB}
+
+
+summary_CREB <- do.call("rbind", sapply(names(fgsea_analysis_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+              as.data.frame(.) %>%
+            dplyr::select(-leadingEdge) %>%
+            filter(grepl("CREB1", pathway)) %>%
+            mutate(condition = x) 
+      return(df)
+})) %>%
+    filter(pval < 0.05)
+
+
+```
+
+```{r titer_corr_figures}
+
+
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+cv2_status <- "CV2_AB_pos"   
+challenges <-  "Challenge_no"
+ab_conditions <- names(fgsea_analysis_titers)[names(fgsea_analysis_titers) %in% summary_CREB$condition] 
+ab_conditions_filt <- ab_conditions[!ab_conditions %in% c(cv2_status, challenges)]
+ab_conditions_filt <- ab_conditions[!ab_conditions == "rV2_E543-3_Post-_Vax"]
+
+
+  for(j in genesets_figs){
+    gsea_hm(fgsea_analysis_titers, 
+        contrasts = "rV2_E543-3_Post-_Vax",
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titers/",j,"_gsea_titers_p162","_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset
+                    )
+    
+    gsea_hm(fgsea_analysis_titers , 
+        contrasts = "rV2_E543-3_Post-_Vax",
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titers/",j,"_gsea_titers_p162",".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15
+                    )
+    gsea_hm(fgsea_analysis_titers , 
+    contrasts = challenges,
+    geneset = j,
+                pval_thr = 0.05,
+                filename  = paste("output/figures/titers/",j,"_gsea_challenges_p162",".pdf", sep = ""), 
+                clusterRowsGap = FALSE,
+                max_gs = 20
+                )
+     gsea_hm(fgsea_analysis_titers ,
+    contrasts = challenges,
+    geneset = j,
+                pval_thr = 0.05,
+                filename  = paste("output/figures/titers/",j,"_gsea_challenges_p162_CREB",".pdf", sep = ""),
+                clusterRowsGap = FALSE,
+                max_gs = 20,
+                subset = CREB_subset
+                )
+    gsea_hm(fgsea_analysis_titers ,
+            contrasts = cv2_status,
+            geneset = j,
+                        pval_thr = 0.05,
+                        filename  = paste("output/figures/titers/",j,"_gsea_rCV2pos_vs_rCV2neg_p162",".pdf", sep = ""),
+                        clusterRowsGap = FALSE,
+                        max_gs = 15
+                        )
+}
+
+
+
+
+titer_plot <- pData_corr %>%
+               gather(outcome, titer, colnames(titers)[c(3:11)]) %>%
+               filter(outcome == "rV2_E543-3_Post-_Vax") %>%
+               ggplot(., aes(x = Challenge_no, y = titer)) + 
+               geom_point() + 
+               facet_wrap(~outcome, scales = "free")
+
+
+
+titer_stats <- pData_corr %>%
+               gather(outcome, titer, colnames(titers)[c(3:11)]) %>%
+               filter(outcome == "rV2_E543-3_Post-_Vax") %>%
+                group_by(outcome) %>%
+                #do(model = cor.test(.$titer, .$Challenge_no, method = "spearman")) %>%
+                do(model = cor.test(.$titer, .$Challenge_no, method = "spearman")) %>%
+                tidy(., model)
+
+pdf(file = file.path(figureDir, "titers_vs_n_challenges.pdf"), width = 8, height = 4)
+titer_plot
+dev.off()
+
+gsva_CV2_ab_pos_LE <- fgsea_analysis_titers$CV2_AB_pos$CHEA$output %>%
+                      filter(pathway == "CREB1") %>%
+                      unnest(.) %>%
+                      .$leadingEdge
+
+gsva_CREB_exprs_CV2pos <- exprs(eset_ALVAC_titer) %>%
+                          as.data.frame(.) %>%
+                          rownames_to_column("Illmn.ID") %>%
+                          inner_join(., fData(eset_ALVAC_titer) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+                          filter(SYMBOL %in% gsva_CV2_ab_pos_LE) %>%
+                          dplyr::select(SYMBOL, colnames(exprs(eset_ALVAC_titer))) %>%
+                          column_to_rownames("SYMBOL") %>%
+                          as.matrix(.)
+gsva_CREB_CV2_pos <- as.matrix(gsva(gsva_CREB_exprs_CV2pos, CHEA_CREB, method = "zscore"))
+gsva_CREB_CV2_pos <- gsva_CREB_CV2_pos[,order(gsva_CREB_CV2_pos[1,]), drop = FALSE]
+
+
+
+
+hm_CV2pos_annot <- pData(eset_ALVAC_titer) %>%
+                    rowid_to_column("rowid") %>%
+                    dplyr::select(`Sample name`,CV2_AB_pos) %>%
+                    column_to_rownames("Sample name")
+
+CV2_hm_gsva <- pheatmap(gsva_CREB_CV2_pos,
+                        cluster_rows = F, 
+                        cluster_cols = F, 
+                        annotation_col = hm_CV2pos_annot,
+                        color = colorRampPalette(colors = c("blue","white", "red"))(500),
+                        scale = "row",
+                        cellwidth = 14,
+                        cellheight = 14,
+                        show_colnames = F,
+                        filename = file.path(figureDir, "titers/gsva_CV2_pos.pdf"),
+                        height = 10,
+                        width = 10,
+                        fontsize = 14)
+
+
+gsva_CV2_CREB_boxplot <- t(gsva_CREB_CV2_pos) %>%
+                              as.data.frame(.) %>%
+                              rownames_to_column("SampleID") %>%
+                              inner_join(., pData(eset_ALVAC_titer) %>% rownames_to_column("SampleID"), by = "SampleID" ) %>%
+                              mutate(CV2_AB_pos = factor(ifelse(CV2_AB_pos == "CV2_pos", "CV2 Positive", "CV2 Negative" ))) %>%
+                              ggboxplot(., x = "CV2_AB_pos", y = "CREB1", color = "CV2_AB_pos", 
+                                        palette = c("dodgerblue4","darkred"),
+                              add = "jitter", outlier.shape = NA, add.params = list(dotsize = 6), ylim = c(-20,20)) +
+                              theme(legend.title = element_blank()) + 
+                              stat_compare_means(label = "p.format", label.x = 1.5, method = "wilcox.test") +
+                              xlab("CV2 Status") +
+                              ylab("CREB1 Z-score") 
+
+pdf(file.path(figureDir, "titers/gsva_CV2_pos_boxplot.pdf"), height = 4, width = 4)
+gsva_CV2_CREB_boxplot
+dev.off()
+
+
+
+
+
+
+CREB_titers_gsea <- do.call("rbind", lapply(ab_conditions[c(1:3,5)], function(x){
+  df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        filter(pathway == "CREB1") %>%
+        dplyr::select(pathway, NES, pval) %>%
+        mutate(outcome = x)
+  return(df)
+}))
+
+
+
+gsea_barplot_func <- function(gsea_df, title = NULL, xvar = "pathway", yvar = "NES", 
+                                     xlab = "Pathway", ylab = "NES (Normalized Enrichment Score)"){
+  df <- gsea_df 
+  topScale <- max(abs(df$NES))
+  colorLS <- colorRampPalette(colors = c("blue", "white", "red"))(500)
+  p <- ggplot(df, aes_string(x = paste0("reorder(", xvar,",", yvar, ")"), 
+                             y = yvar, fill = yvar)) + 
+        geom_bar(stat='identity', width=0.8, position = "identity") +
+        theme_bw() + 
+        xlab(xlab) + 
+        ylab(ylab) + 
+        ggtitle(title) + 
+        theme(axis.title = element_text(family = "Times", face="bold", size=12)) +
+           theme(axis.text = element_text(family = "Times", face="bold", size=8)) +
+        geom_hline(yintercept=0, color = "gray", size=0.5) +
+        scale_fill_gradientn(colours = colorLS, limits = c(-topScale, topScale)) +
+        coord_flip() 
+  return(p)
+}
+
+
+
+CREB_titers_gsea_p <- gsea_barplot_func_titers(CREB_titers_gsea,
+                                               xvar = 'outcome', xlab = 'Ab correlate') +
+                        theme(axis.text = element_text(size = 12),
+                              text = element_text(size = 14) ,
+                              axis.title = element_text(size = 14, face = "bold"))
+
+pdf("output/figures/titers/CHEA_gsea_titers_p162_barplot_CREB.pdf", height = 4, width = 5)
+CREB_titers_gsea_p 
+dev.off()
+
+
+
+
+
+
+
+```
+
+
+
+```{r gsva_mf59}
+
+gsva_CREB_induced_LE_mf59 <- fgsea_analysis_pre_post_MF59$`post-1st immunization`$CHEA$output %>%
+                      filter(pathway == "CREB1") %>%
+                      unnest(cols = "leadingEdge") %>%
+                      .$leadingEdge
+
+
+
+adjuvant_samples <- pData(eset_ave) %>%
+                dplyr::select(`Sample name`, donor, `vaccination time`, `vaccination group`) %>%
+                #spread(`vaccination time`, `Sample name`)
+                mutate(adjuvant = gsub(".*gp120/", "", `vaccination group`)) %>%
+                filter(!grepl("1st",`vaccination time`))
+                
+                
+                
+
+mf59_samples <- adjuvant_samples %>%
+                filter(adjuvant == "MF59") %>%
+                .$`Sample name`
+
+
+gsva_CREB_exprs_induced_mf59 <- exprs(eset_ave) %>%
+                          as.data.frame(.) %>%
+                          rownames_to_column("ProbeID") %>%
+                          #dplyr::select(c("Illmn.ID", colnames(eset_ALVAC_titer))) %>%
+                          inner_join(., fData(eset_ave) , by = "ProbeID") %>%
+                          #gather(sample, value, pData(eset_ALVAC)$`Sample name` )
+                          filter(BROAD.Gene.Symbol %in% rv144_creb1_ledge) %>%
+                          #filter(BROAD.Gene.Symbol %in% gsva_CREB_induced_LE_mf59) %>%
+                          dplyr::select(BROAD.Gene.Symbol, colnames(eset_ave)[colnames(eset_ave) %in% mf59_samples]) %>%
+                          #dplyr::select(BROAD.Gene.Symbol, colnames(eset_ave)[grepl("P162_", colnames(eset_ave))]) %>%
+                          column_to_rownames("BROAD.Gene.Symbol") %>%
+                          as.matrix(.)
+gsva_CREB_induced_mf59 <- as.matrix(gsva(gsva_CREB_exprs_induced_mf59, CHEA_CREB, method = "zscore"))
+gsva_CREB_induced_mf59 <- gsva_CREB_induced_mf59[,order(gsva_CREB_induced_mf59[1,]), drop = FALSE]
+
+library(PairedData)
+gsva_prepost_CREB_boxplot <- t(gsva_CREB_induced_mf59) %>%
+                              as.data.frame(.) %>%
+                              rownames_to_column("Sample name") %>%
+                              inner_join(., pData(eset_ave), by = "Sample name" ) %>%
+                              mutate(adj = gsub(".*gp120/", "", `vaccination group`)) %>%
+                              mutate(combo = paste(adj, `vaccination time`, sep = "__")) %>%
+                              # mutate(visit = ifelse(`vaccination time` == "pre-vaccination", "Pre-vaccination",
+                              #                       "Post-vaccination" )) %>%
+                              # mutate(visit = factor(visit, levels = c("Pre-vaccination", "Post-vaccination"))) %>%
+                              ggpaired(., x = "combo", y = "CREB1", color = "combo", id = "donor", 
+                                        palette = brewer.pal(8, "Dark2")[c(1:6)],
+                              add = "jitter", outlier.shape = NA, line.color = "gray") +
+                              stat_compare_means(label = "p.signif", label.x = 1.5, method = "" paired = T) +
+                              xlab("Vaccination Timepoint") +
+                              ylab("CREB1 Z-score") + 
+                              rotate_x_text(angle = 45)
+                              labs(title = "CREB1")
+
+
+pdf("output/figures/creb1_zscore_mf59_postax.pdf")
+gsva_prepost_CREB_boxplot_mf59
+dev.off()
+
+
+
+gsva_CREB_induced_LE_alum <- fgsea_analysis_pre_post$Alum__post_1st_immunization$CHEA$output %>%
+                      filter(pathway %in% c("YY1","CREB1", "TBX5", "SOX17", "TAL1")) %>%
+                      unnest(cols = "leadingEdge") %>%
+                      .$leadingEdge
+
+
+
+# adjuvant_samples <- pData(eset_ave) %>%
+#                 dplyr::select(`Sample name`, donor, `vaccination time`, `vaccination group`) %>%
+#                 #spread(`vaccination time`, `Sample name`)
+#                 mutate(adjuvant = gsub(".*gp120/", "", `vaccination group`))
+#                 
+#                 
+#                 
+
+alum_samples <- adjuvant_samples %>%
+                filter(adjuvant == "Alum") %>%
+                .$`Sample name`
+
+
+
+
+
+gsva_CREB_exprs_induced_alum <- exprs(eset_ave) %>%
+                          as.data.frame(.) %>%
+                          rownames_to_column("ProbeID") %>%
+                          #dplyr::select(c("Illmn.ID", colnames(eset_ALVAC_titer))) %>%
+                          inner_join(., fData(eset_ave) , by = "ProbeID") %>%
+                          #gather(sample, value, pData(eset_ALVAC)$`Sample name` )
+                          filter(BROAD.Gene.Symbol %in% rv144_creb1_ledge) %>%
+                          #filter(SYMBOL %in% gsva_CREB_induced_LE_alum) %>%
+                          dplyr::select(BROAD.Gene.Symbol, colnames(eset_ave)[colnames(eset_ave) %in% alum_samples]) %>%
+                         
+                          #dplyr::select(SYMBOL, mf59_samples ) %>%
+                          #dplyr::select(SYMBOL, alum_samples[!grepl("post3rd", alum_samples)]) %>%
+                          column_to_rownames("BROAD.Gene.Symbol") %>%
+                          as.matrix(.)
+gsva_CREB_induced_alum <- as.matrix(gsva(gsva_CREB_exprs_induced_alum, CHEA_CREB, method = "zscore"))
+gsva_CREB_induced_alum <- gsva_CREB_induced_alum[,order(gsva_CREB_induced_alum[1,]), drop = FALSE]
+
+
+gsva_prepost_CREB_boxplot_alum <- t(gsva_CREB_induced_alum) %>%
+                              as.data.frame(.) %>%
+                              rownames_to_column("Sample name") %>%
+                              inner_join(., pData(eset_ave), by = "Sample name" ) %>%
+                              mutate(adj = gsub(".*gp120/", "", `vaccination group`)) %>%
+                              mutate(combo = paste(adj, `vaccination time`, sep = "__")) %>%
+                              # mutate(visit = ifelse(`vaccination time` == "pre-vaccination", "Pre-vaccination",
+                              #                       "Post-vaccination" )) %>%
+                              # mutate(visit = factor(visit, levels = c("Pre-vaccination", "Post-vaccination"))) %>%
+                              ggpaired(., x = "combo", y = "CREB1", color = "combo", id = "donor", 
+                                        palette = brewer.pal(8, "Dark2")[c(1:6)],
+                              add = "jitter", outlier.shape = NA, line.color = "gray") +
+                              stat_compare_means(label = "p.signif", label.x = 1.5, paired = T) +
+                              xlab("Vaccination Timepoint") +
+                              ylab("CREB1 Z-score") + 
+                              rotate_x_text(angle = 45) +
+                              labs(title = "Alum CREB1")
+
+
+pdf("output/figures/creb1_zscore_alum_postax.pdf")
+gsva_prepost_CREB_boxplot_alum
+dev.off()
+
+
+```
+
+
+
+
+```{r CREB induced}
+
+# gsva_CREB_induced_LE <- rbind(fgsea_analysis_pre_post$`post-1st immunization`$CHEA$output,
+#                               fgsea_analysis_pre_post_MF59$`post-1st immunization`$CHEA$output) %>%
+gsva_CREB_adj_LE <- fgsea_analysis_post_adj$`Alum_post-3rd immunization`$CHEA$output %>%
+                      filter(pathway == "CREB1") %>%
+                      unnest(cols = "leadingEdge") %>%
+                      .$leadingEdge
+
+
+
+
+
+gsva_CREB_exprs_adj <- exprs(eset_BL_ave) %>%
+                          as.data.frame(.) %>%
+                          rownames_to_column("ProbeID") %>%
+                          #dplyr::select(c("Illmn.ID", colnames(eset_ALVAC_titer))) %>%
+                          inner_join(., fData(eset_BL_ave) , by = "ProbeID") %>%
+                          #gather(sample, value, pData(eset_ALVAC)$`Sample name` )
+                          filter(SYMBOL %in% gsva_CREB_adj_LE) %>%
+                          dplyr::select(BROAD.Gene.Symbol, 
+                                        colnames(exprs(eset_BL_ave))[grepl("post3rd", colnames(exprs(eset_BL_ave)))]) %>%
+                          column_to_rownames("BROAD.Gene.Symbol") %>%
+                          as.matrix(.)
+gsva_CREB_adj <- as.matrix(gsva(gsva_CREB_exprs_adj, CHEA_CREB, method = "zscore"))
+gsva_CREB_adj <- gsva_CREB_adj[,order(gsva_CREB_adj[1,]), drop = FALSE]
+
+
+writeLines(fgsea_analysis_post_adj$`Alum_post-3rd immunization`$CHEA$output %>% filter(pathway == "CREB1") %>% unnest(cols = "leadingEdge") %>% .$leadingEdge,
+            con = "output/data/Alum_CREB1_leadingEdge_postvax.txt")
+
+writeLines(fgsea_analysis_pre_post_MF59$MF59__post_3rd_immunization$CHEA$output %>% filter(pathway == "CREB1") %>% unnest(cols = "leadingEdge") %>% .$leadingEdge,
+            con = "output/data/MF59_CREB1_leadingEdge_postvax.txt")
+```
+
+```{r adj_chcomek_GPCR}
+study36_gpcr_chemok <- c(readLines("../output/data/gpcr_chemok_ALVAC.txt"),
+                         readLines("../output/data/GPCR_chemok_genesets.txt"))
+
+chemok_GPCR_post_adj  <-do.call("rbind", lapply(c("c2", "c5"), function(x){
+  df  <- fgsea_analysis_post_adj$`Alum_post-3rd immunization`[[x]]$output %>%
+          filter(pval < 0.05) %>%
+          filter(grepl("CHEMOK|MIGRATION|CCR[0-9]+|CXCR[0-9]+|CX3CR[0-9]+|MIP1|FRACTALK|CHEMOTAXIS|GPCR", pathway)) %>%
+          filter(!grepl("ANGIO|MUSCLE", pathway)) %>%
+          filter(NES > 0) %>%
+          mutate(pathway = ifelse(pathway %in% study36_gpcr_chemok, paste("* ", pathway, sep = ""),
+                                  pathway))
+  
+  return(df)
+}))
+
+
+pdf(file.path(figureDir, "Alum_vs_MF59_chemokines_GPCR.pdf"), width = 8, height = 5 )
+gsea_barplot_func(chemok_GPCR_post_adj,xvar = "pathway", yvar = "NES" ) +
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14, face = "bold"))
+dev.off()
+
+
+write.csv(chemok_GPCR_post_adj %>% dplyr::select(-leadingEdge), file = "output/data/p162_chemokine_GPCR_signaling.csv")
+
+
+
+
+```
+
+
+```{r functional adjuvant analysis}
+
+functional_filter <- c("INTERLEUKIN","IL[-|][0-9]+", "TGFB", "TNF", "IFN", "INTERFERON", "ANTIBODY", "TCR", "B[ |]cells", 
+                       "T[ |]cells", "DC[ |]cells", "DENDRITIC", "MACROPHAGE", "MONOCYTE", "CYTOKINE", "MIF1", "MIP1",
+                       "FRACTAL", "CHEMOK", "MIGRATION", "CCR[0-9]+" , "CXCR[0-9]+" , "CX3CR[0-9]+" , "MIP1 ",
+                        "FRACTALK", "CHEMOTAXIS" , "GPCR", "ANTIGEN", "CHEMOTAXIS", "STAT[0-9]+", "IRF[0-9]+")
+functional_post_adj  <-  do.call("rbind", lapply(c("c2", "c5", "c7"), function(x){
+  df  <- fgsea_analysis_post_adj$`Alum_post-3rd immunization`[[x]]$output %>%
+          filter(pval < 0.05) %>%
+          filter(NES > 0) %>%
+          filter(grepl(paste(functional_filter, collapse = "|"), pathway)) %>%
+          filter(!grepl("ANGIO|MUSCLE", pathway))  %>%
+          mutate(collection = x) 
+  
+  return(df)
+})) %>% split(., f = .$pathway)
+
+
+functional_post_adj_ledge <- sapply(names(functional_post_adj), simplify = F, USE.NAMES = T, function(x){
+  ledge <- functional_post_adj[[x]] %>%
+            unnest(cols = "leadingEdge") %>%
+            .$leadingEdge
+  return(ledge)
+})
+
+write.csv(file = "output/data/mf59_alum_functional_ledge.csv", row.names = F, quote = F,
+      x = stack(functional_post_adj_ledge) %>% 
+                group_by(ind) %>%
+                mutate(leadingEdge = paste(values, collapse = "; ")) %>%
+                dplyr::select(-values) %>%
+                unique())
+
+
+alum_mf59_functional_ledge <- bind_rows(functional_post_adj) %>%
+    unnest(cols = "leadingEdge") %>%
+    mutate(ledge = leadingEdge) %>%
+    group_by(pathway) %>%
+    mutate(leadingEdge = paste(ledge, collapse = ", ")) %>%
+    ungroup() %>%
+    dplyr::select(-ledge) %>%
+    unique()
+
+
+expr_mat_functional_adj <- sapply(names(functional_post_adj_ledge), simplify = F, USE.NAMES = T, function(x){
+  expr <- exprs(eset_BL_ave) %>%
+            as.data.frame(.) %>%
+            rownames_to_column("ProbeID") %>%
+            #dplyr::select(c("Illmn.ID", colnames(eset_ALVAC_titer))) %>%
+            inner_join(., fData(eset_BL_ave) , by = "ProbeID") %>%
+            #gather(sample, value, pData(eset_ALVAC)$`Sample name` )
+            filter(BROAD.Gene.Symbol %in% functional_post_adj_ledge[[x]]) %>%
+            dplyr::select(BROAD.Gene.Symbol, 
+                          colnames(exprs(eset_BL_ave))[grepl("post3rd", colnames(exprs(eset_BL_ave)))]) %>%
+            column_to_rownames("BROAD.Gene.Symbol") %>%
+            as.matrix(.)
+  return(expr)
+})
+
+functional_genesets <- list("c2" = getGmt(geneset_list$c2), "c5" = getGmt(geneset_list$c5), "c7" = getGmt(geneset_list$c7)  )
+
+
+gsva_functional_adj <- do.call("rbind", lapply(names(expr_mat_functional_adj), function(x){
+  collection <- functional_post_adj[[x]]$collection
+  coll  <- functional_genesets[[collection]]
+  gs <- coll[names(coll)  == x]
+  mat <- expr_mat_functional_adj[[x]]
+  #return(gs)
+  gsva <- as.matrix(gsva(expr = mat, gset.idx.list = gs, method = "zscore"))
+  #gsva <- gsva[,order(gsva[1,]), drop = FALSE]
+  #return(gsva)
+  gsva <- gsva %>%
+          as.data.frame() %>%
+          rownames_to_column("pathway") %>%
+          gather(SampleID, value, -pathway) #%>%
+          
+  return(gsva)
+})) %>%
+    spread(pathway, value) 
+
+functional_adj_CREB_corr <-  gsva_CREB_adj %>%
+                              as.data.frame() %>%
+                              rownames_to_column("CREB") %>%
+                              gather(SampleID, CREB_score, -CREB) %>%
+                              inner_join(., gsva_functional_adj, by  ="SampleID") %>%
+                              gather(functional_pathway, zscore, -SampleID, -CREB, -CREB_score  )  %>%
+                              group_by(functional_pathway) %>%
+                              do(model = cor.test(.$CREB_score, .$zscore, method = "spearman")) %>%
+                              tidy(., "model") %>%
+                              filter(estimate > 0) %>%
+                              filter(p.value < 0.05) %>%
+                              arrange(p.value) %>%
+                              ungroup()
+
+write.csv(functional_adj_CREB_corr, "output/data/P162_functional_adjuvant_pathways.csv")
+
+
+### rv144 
+rv144_hiv_acquisition <- read_excel("../rv144/output/data/leadingEdge_hiv_acquisition_genesets_ANNOT2.xlsx") %>%
+                          mutate(new_name = ifelse(is.na(new_name), pathway, new_name)) %>%
+                          filter(new_name != "-")  %>%
+                          dplyr::select(-leadingEdge)
+
+functional_post_adj_annot <- do.call("rbind", functional_post_adj) %>%
+                               remove_rownames() %>%
+                               unnest(cols = "leadingEdge") %>%
+                                mutate(ledge = leadingEdge)  %>%
+                              group_by(pathway) %>%
+                              mutate(leadingEdge = paste(ledge, collapse = ", ")) %>%
+                              ungroup() %>%
+  
+                              dplyr::select(-ledge)  %>%
+                              unique()  %>%
+                              inner_join(., rv144_hiv_acquisition, by = "pathway") %>%
+                              mutate(pathway_name = pathway,
+                                     pathway = new_name)
+
+pdf(file.path(figureDir, "Alum_vs_MF59_functional_genesets.pdf"), width = 8, height = 6)
+gsea_barplot_func(functional_post_adj_annot) +
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14, face = "bold"))
+dev.off()
+
+writexl::write_xlsx(functional_post_adj_annot,  path = "output/data/Alum_vs_MF59_functional_genesets.xlsx")
+
+encode <- getGmt("../input/genesets/ENCODE-tf.gmt") 
+encode_CREB_genes <- geneIds(encode[names(encode) == "CREB1"])[[1]]
+transfac <- getGmt("../input/genesets/TRANSFAC.gmt")
+transfac_CREB_genes <- geneIds(transfac[names(transfac) == "CREB1"])[[1]]
+jasper <- getGmt("../input/genesets/JASPER-tf.gmt")
+jasper_CREB_genes <- geneIds(jasper[names(jasper) == "CREB1"])[[1]]   
+putative_CREB <- getGmt("../input/genesets/putative_CREB1_targets.gmt")
+
+
+
+ledge_adj_functional <- sapply(rv144_hiv_acquisition$pathway, simplify = F, USE.NAMES = T, function(x){
+    mat <- expr_mat_functional_adj[[x]] 
+    
+    gene_annot <- mat %>% as.data.frame() %>%
+                  rownames_to_column("Gene") %>%
+                  mutate(`CREB Target` = ifelse(Gene %in% c(encode_CREB_genes, geneIds(CHEA_CREB)$CREB1),
+                                                "Direct Target", ifelse(Gene %in% c(transfac_CREB_genes, jasper_CREB_genes,
+                                                                                    geneIds(putative_CREB)[[1]]), 
+                                                                        "Putative Target", "--" )))  %>%
+                  dplyr::select(Gene, `CREB Target`)  %>%
+                  column_to_rownames("Gene")
+                           
+    
+    annot <- pData(eset_BL_ave) %>%
+                as.data.frame() %>%
+                mutate(adjuvant = gsub(".*gp120/", "", `vaccination group`)) %>%
+                filter(`Sample name` %in% colnames(mat)) %>%
+                arrange(adjuvant) %>%
+                column_to_rownames("Sample name")
+    cols.cor <- cor(mat, use = "pairwise.complete.obs", method = "spearman")
+    
+    mat <- mat[,row.names(annot)]
+    p <- pheatmap(mat = mat,
+                  color = colorRampPalette(colors = c("blue", "white", "red"))(500),
+                  scale = "row",
+                  show_colnames = F, 
+                  annotation_col = annot["adjuvant"],
+                  cluster_cols = F,
+                  clustering_method = "ward.D2",
+                  annotation_row = gene_annot["CREB Target"],
+                  #clustering_distance_cols = as.dist(1-cols.cor),
+                  fontsize = 5,
+                  filename = file.path(figureDir, paste("leadingEdge_",x ,"_functional_Alum_vs_MF59.pdf", sep ="")))
+    return(p)
+    
+})
+
+```
+
+
+
+```{r adj_functional}
+
+
+
+
+```
+
+
+```{r genemania DEGS}
+
+genemania_DEGs_post_adj <- fits_output_adjuvant$topTables$`Alum_post-3rd immunization` %>%
+        rownames_to_column("BROAD.Gene.Symbol")  %>%
+        filter(BROAD.Gene.Symbol %in% genemania_list$genename)
+
+write.csv(genemania_DEGs_post_adj, file = "output/data/P162_genemania_genes_postvaxx_alum_vs_mf59.csv")
+```
+
+
+
+
+```{r }
+suppressPackageStartupMessages(library(survminer))
+test_KM <- test %>%
+            #mutate(Group = ifelse(rSIVsm_cV2_PostPre > 0, 1, 0)) %>%
+            mutate(Group = ifelse(`rV2_E543-3_Post-_Vax` > 0, 1, 0)) %>%
+            mutate(right_c = ifelse(Challenge_no == 11, 0, 1)) %>%
+            mutate(Group = factor(Group, levels = c(0, 1), labels = c("Neg", "Pos"))) #%>%
+            #mutate(right_c = factor(right_c, levels = c(0,1), labels = c("no", "yes")))
+
+
+#gsva_CREB_strat <- gsva_CREB_CV2_pos %>%
+    gsva_CREB_strat <- gsva_CREB_adj %>%
+                    as.data.frame(.) %>%
+                    rownames_to_column("module") %>%
+                    gather(sample_id, zscore, -module) %>%
+                    filter(!grepl("prevax", sample_id)) %>%
+                    inner_join(., pData(eset_ave), by = c("sample_id" = "Sample name")) %>%
+                    mutate(adjuvant = factor(gsub(".*gp120/", "", `vaccination group`))) %>%
+                    rename(Challenge_no = "number of SIV challenge to infection") %>%
+                    mutate(Challenge_no = as.numeric(ifelse(Challenge_no == "neg", 11, Challenge_no))) %>%
+                    
+                    #rowid_to_column("rank") %>%
+                    # mutate(CREB_hilo = ifelse(zscore > median(zscore), "high", "low")) %>%
+                    # mutate(CREB_sub = factor(CREB_hilo, levels = c("low", "high")))
+                     mutate(CREB_quartiles = ntile(zscore, n = 4)) %>%
+                     mutate(CREB_tertiles = ntile(zscore, n = 3)) %>%
+                      mutate(CREB_sub = ifelse(CREB_tertiles == 1, "low",
+                                               ifelse(CREB_tertiles == 2, "medium", "high"))) %>%
+                      mutate(CREB_sub  = factor(CREB_sub, levels = c("low", "medium", "high")))
+  
+ average_tertile_scores <- gsva_CREB_strat %>%
+                            group_by(CREB_sub) %>%
+                            summarize(mean_zscore = mean(zscore),
+                                      mean_nChallenges = mean(Challenge_no),
+                                      median_nChallenges = median(Challenge_no),
+                                      n_right_censored = sum(Challenge_no ==11)) %>%
+                            ungroup()
+ write_tsv(average_tertile_scores, path = "output/data/P162_average_tertile_scores.tsv")
+                                
+
+#KM_CREB_strat <- pData(eset_ALVAC_titer) %>%
+  KM_CREB_strat <- gsva_CREB_strat %>%
+                  #  rownames_to_column("sample_id") %>%
+                  # filter(sample_id %in% gsva_CREB_strat$sample_id) %>%
+                   #rename(Challenge_no = "number of SIV challenge to infection") %>%
+                    #mutate(Challenge_no = as.numeric(ifelse(Challenge_no == "neg", 11, Challenge_no))) %>%
+                   # mutate(Group = ifelse(`rV2_E543-3_Post-_Vax` > 0, 1, 0)) %>%
+                  mutate(right_c = ifelse(Challenge_no == 11, 0, 1)) #%>%
+                   # mutate(Group = factor(Group, levels = c(0, 1), labels = c("Neg", "Pos"))) %>%
+                   #inner_join(., gsva_CREB_strat, by = "sample_id")
+
+
+as_tibble(test_KM)
+# surv_object <- survival::Surv(time = test_KM$Challenge_no, event = test_KM$right_c) 
+surv_object <- survival::Surv(time = KM_CREB_strat$Challenge_no, event = KM_CREB_strat$right_c) 
+#surv_object <- survival::Surv(time = KM_CREB_strat$Challenge_no, event = gsva_CREB_strat$) 
+
+gsva_HIV_pos_CREB_logit_prep <- t(gsva_CREB_adj) %>%
+                              as.data.frame(.) %>%
+                              rownames_to_column("SampleID") %>%
+                              inner_join(., KM_CREB_strat, by = c("SampleID"= "sample_id" )) %>%
+                              mutate(adjuvant_bin = ifelse(adjuvant == "Alum", 1, 0)) 
+                              
+                              #mutate(HIV_infection = ifelse(is.na(Challenge_no), 0, 1 )) %>%
+                              #mutate(donor = as.character(donor)) %>%
+                              #inner_join(., pData_clinical, by ="donor") #%>%
+                              #mutate(dem_sex = factor(dem_sex)) %>%
+                              # mutate(CREB_tertiles = ntile(CREB1, n = 3)) %>%
+                              # filter(CREB_tertiles %in% c(1,3)) %>%
+                              # mutate(CREB_sub = ifelse(CREB_tertiles == 1, "low","high")) %>%
+                              # mutate()
+                              # mutate(CREB_sub = ifelse(CREB_tertiles == 1, "low",
+                              #                          ifelse(CREB_tertiles == 2, "medium", "high"))) %>%
+               
+                              # mutate(CREB_sub  = factor(CREB_sub, levels = c("low", "medium", "high"))) %>%
+                              # mutate(censored = ifelse(infect == "Yes", 1, 0)) %>%
+                              # mutate(time_to_infect = time_to_infect / 12)
+                              
+
+
+
+creb_adjuvant_box <- gsva_HIV_pos_CREB_logit_prep %>%
+                              ggboxplot(., x = "adjuvant", y = "CREB1", color = "adjuvant",
+                                        palette = brewer.pal(name =  "Paired", n = 12)[c(6,8)],
+                              add = "jitter", outlier.shape = NA) +
+                              stat_compare_means(label = "p.format", label.x = 1.5, method = "wilcox.test") +
+                              xlab("Adjuvant") +
+                              ylab("CREB1 Z-score") 
+                  
+
+
+
+library(MASS)
+creb_adjuvant_challenges <- gsva_HIV_pos_CREB_logit_prep %>%
+                              ggplot(., aes_string(x = "Challenge_no", y = "CREB1", color = "adjuvant")) +
+                              geom_point() +
+                              theme_bw() +
+                             # stat_smooth(method = "lm", aes(group = 1)) + 
+                              stat_smooth(method = "rlm") + 
+                              xlab("Number of Challenges") +
+                              ylab("CREB1 Z-score")
+
+
+creb_adjuvant_challenge_corr <- gsva_HIV_pos_CREB_logit_prep %>%
+                                do(model = cor.test(.$CREB1, .$Challenge_no, method = "spearman")) %>%
+                                tidy(., model)
+
+creb_adjuvant_challenge_corr_grouped <- gsva_HIV_pos_CREB_logit_prep %>%
+                                group_by(adjuvant) %>%
+                                do(model = cor.test(.$CREB1, .$Challenge_no, method = "spearman")) %>%
+                                tidy(., model)
+
+pdf(file.path(figureDir, "3rd_immunization_alumvs_Mf59_CREB_boxplot.pdf"), width = 4, height = 4)
+creb_adjuvant_box
+dev.off()
+
+pdf(file.path(figureDir, "3rd_immunization_alum vs_Mf59_CREB challenge_corr.pdf"))
+creb_adjuvant_challenges
+dev.off()
+
+p162_logit_CREB <- glm(adjuvant_bin ~ CREB1, data = gsva_HIV_pos_CREB_logit_prep, family = "binomial")
+#p162_logit_CREB <- glm(HIV_infection~ CREB1_, data = gsva_HIV_pos_CREB_logit_prep, family = "binomial")
+
+# 
+# fit1 <- survival::survfit(surv_object ~ extreme_split, data = KM_CREB_strat)
+# 
+# library(survminer)
+# ggsurvplot(fit1, data =KM_CREB_strat, pval = TRUE, 
+#            break.x.by = 1, 
+#            break.y.by = 0.1,
+#            xlab = "Number of IR challenges",
+#            ylab = "%infection-free probability")
+
+
+
+#gsva_HIV_pos_CREB_surv <- gsva_HIV_pos_CREB_logit_prep 
+
+fit1_arms <- survival::survfit(surv_object ~ adjuvant, data = KM_CREB_strat)
+#fit1 <- survival::survfit(surv_object ~ CREB_sub, data = KM_CREB_strat)
+fit1_quartiles <- survival::survfit(surv_object ~ CREB_quartiles, data = KM_CREB_strat)
+fit1_tertiles <- survival::survfit(surv_object ~ CREB_sub, data = KM_CREB_strat)
+
+
+library(survminer)
+library(survival)
+surv_CREB_curve_arms <- ggsurvplot(fit1_arms, data = KM_CREB_strat, pval = TRUE,
+          # risk.table = T,
+           break.x.by = 1, 
+           break.y.by = 0.1,
+           #ylim = c(0, 0.4),
+           xlab = "Number of IR challenges",
+           ylab = "%infection-free probability",
+          legend.labs = c("Alum", "MF59"),
+          legend.title = "p162 Treatment Arms") +
+        theme_survminer() 
+        
+
+surv_CREB_curve_quartiles <- ggsurvplot(fit1_quartiles, data = KM_CREB_strat, pval = TRUE,
+          # risk.table = T,
+           break.x.by = 1, 
+           break.y.by = 0.1,
+           #ylim = c(0, 0.4),
+           xlab = "Number of IR challenges",
+           ylab = "%infection-free probability",
+          legend.labs = c("Q1", "Q2", "Q3", "Q4"),
+          legend.title = "p162 CREB1 quartiles") +
+        theme_survminer() 
+
+surv_CREB_curve_tertiles <- ggsurvplot(fit1_tertiles, data = KM_CREB_strat, pval = TRUE,
+          # risk.table = T,
+           break.x.by = 1, 
+           break.y.by = 0.1,
+           #ylim = c(0, 0.4),
+           xlab = "Number of IR challenges",
+           ylab = "%infection-free probability",
+          legend.labs = c("low", "medium", "high"),
+          legend.title = "p162 CREB1 tertiles") +
+         theme_survminer(base_size = 8) +
+        guides(colour = guide_legend(nrow = 2)) + 
+        ggsave("output/figures/survival_curve_p162_CREB_tertiles.pdf", device = "pdf", height =4, width =4 , units = "in")
+
+
+
+surv_lr <- survdiff(Surv(Challenge_no, event = right_c) ~ CREB_sub, data = KM_CREB_strat)
+
+surv_pw <- pairwise_survdiff(Surv(Challenge_no, event =  right_c) ~ CREB_sub, data = KM_CREB_strat, 
+                             p.adjust.method = "none")
+
+write.csv(tidy(surv_pw), file = "output/data/survival_pairwise.csv")
+pdf("output/figures/survival_curve_p162_arms.pdf")
+surv_CREB_curve_arms
+dev.off()
+
+pdf("output/figures/survival_curve_p162_CREB_quartiles.pdf")
+surv_CREB_curve_quartiles
+dev.off()
+
+
+pdf("output/figures/survival_curve_p162_CREB_tertiles.pdf")
+surv_CREB_curve_tertiles
+dev.off()
+
+
+
+
+
+
+```
+
+
+```{r multivariate CREB_w_MSD_challenges}
+
+CREB_gsva_annot_adj <- gsva_CREB_adj %>%
+                  as.data.frame() %>%
+                  rownames_to_column("pathway") %>%
+                  gather(sample, zscore, -pathway) %>%
+                  mutate(Animal.ID = gsub("P162_", "", sample)) %>%
+                  mutate(Animal.ID =  gsub("_post3rd", "", Animal.ID)) %>%
+                  dplyr::select(Animal.ID, pathway, zscore) %>%
+                  mutate(zscore = scale(zscore)) %>%
+                  spread(pathway, zscore)
+
+mat_wk5_all <- exprs(esetMDS) %>%
+              as.data.frame() %>%
+              rownames_to_column("analyte") %>%
+              gather(sample, analyte_value, -analyte) %>%
+              inner_join(., pData(esetMDS) %>% rownames_to_column("sample"), by ="sample" ) %>%
+              filter(Timepoint == "wk5") %>%
+              group_by(analyte) %>%
+              mutate(analyte_value = scale(analyte_value)) %>%
+              ungroup() %>%
+              filter(!is.na(analyte_value)) %>%
+              dplyr::select(Animal.ID, analyte, analyte_value) %>%
+              spread(analyte, analyte_value) %>%
+              inner_join(., CREB_gsva_annot_adj, by ="Animal.ID") %>%
+              column_to_rownames("Animal.ID") %>%
+              as.matrix()
+
+outcome_adj <- KM_CREB_strat %>%
+                filter(donor %in% row.names(mat_wk5_all)) %>%
+                arrange(match(donor, row.names(mat_wk5_all))) %>%
+                .$Challenge_no
+
+
+
+lasso_no_int <- function(x,y, intercept = FALSE, family = "gaussian", alpha = c(1,1), lambda_choice = "lambda.1se",
+                          standardize = TRUE) {
+  opt_rmse <- 10000
+  set.seed(1)
+    
+    for(j in seq(alpha[1], alpha[2], by = 0.1)){
+      
+  
+      lambdas <- 10^seq(-5, 5, by = 0.1)
+      
+      fit <- glmnet(x, y, alpha = j, lambda = lambdas, intercept= intercept, family= family, standardize = standardize)
+      cv_fit <- cv.glmnet(x,y,alpha = j,nfolds = nrow(x),grouped=FALSE,lambda = lambdas, intercept = intercept, 
+                          standardize = standardize)
+      #print(cv_fit)
+      opt_lambda <- cv_fit[[lambda_choice]]
+      
+      pred_type <- "link"
+      y_predicted <- predict(fit, s = opt_lambda, newx = x, type = "link") 
+      
+      predict_df <- data.frame(y,y_predicted)
+  
+      index <- which(cv_fit$lambda == opt_lambda)
+      rmse <- sqrt(cv_fit$cvm[index])
+        
+      tmp_coeffs <- coef(cv_fit, s = lambda_choice)
+      
+      sd <- x %>%
+            as.data.frame(.) %>%
+            gather(Assay, value) %>%
+            group_by(Assay) %>%
+            summarise(sd = sd(value))
+      
+      std_coeffs <- as.data.frame(as.matrix(tmp_coeffs)) %>%
+                    rownames_to_column("Assay") %>%
+                    rename(coefficients = "1") %>%
+                    filter(Assay != "(Intercept") %>%
+                    inner_join(.,sd, by = "Assay") %>%
+                    mutate(std.coeffs = coefficients * sd)  #Agresti method for coefficient standardzation
+                    
+                      
+        
+      
+      if(opt_rmse > rmse){
+        lasso_vector <- list()
+        lasso_vector$tmp_coeffs <- tmp_coeffs
+        lasso_vector$lambda <- opt_lambda
+        lasso_vector$lambda_choice <- lambda_choice
+        lasso_vector$predict_df <- predict_df
+        lasso_vector$rmse<- rmse
+        lasso_vector$cv_fit <- cv_fit
+        lasso_vector$lm <- glance(lm(predict_df$X1 ~ predict_df$y))
+        lasso_vector$alpha <- j
+        lasso_vector$std_coeffs <- std_coeffs
+        opt_rmse <- rmse
+      }
+    }
+  if(opt_rmse == 10000){
+    lasso_vector <- NA
+  }
+  
+
+  return(lasso_vector)
+}
+
+
+
+
+test <- lasso_no_int(x = mat_wk5_all, y = outcome_adj, alpha = c(0, 1), lambda_choice = "lambda.min", standardize = F)
+
+```
+
+
+```{r CREB_zscore}
+CREB_LE <- fgsea_analysis_pre_post$`post-1st immunization`$CHEA$output %>%
+              filter(pathway == "CREB1") %>%
+              unnest(.) %>%
+              .$leadingEdge
+
+CREB_exprs_matr_induced <- exprs(eset_ALVAC_titer) %>%
+            as.data.frame(.) %>%
+            rownames_to_column("Illmn.ID") %>%
+            gather(sample, value, -Illmn.ID) %>%
+            filter(grepl("post1st", sample)) %>%
+            inner_join(., fData(eset_ALVAC_titer) %>% rownames_to_column("Illmn.ID") , by = "Illmn.ID") %>%
+            filter(SYMBOL %in% CREB_LE) %>%
+            dplyr::select(SYMBOL, sample, value) %>%
+            spread(sample, value) %>%
+            column_to_rownames("SYMBOL") %>%
+            as.matrix(.)
+
+CHEA <- getGmt("../input/genesets/CHEA-tf.gmt")
+CHEA_CREB <- CHEA[names(CHEA) == "CREB1"]
+CREB_GSVA <- gsva(CREB_exprs_matr, CHEA_CREB, method = "zscore") 
+
+
+
+```
+
+
+
+```{r export tables }
+
+alum_vs_mf_export <- do.call("rbind", lapply(c("c2", "c5", "CHEA"), function(x){
+  df  <- fgsea_analysis_post_adj$`Alum_post-3rd immunization`[[x]]$output %>%
+          as.data.frame() %>%
+          filter(pval < 0.05) %>%
+        unnest(cols = "leadingEdge") %>%
+        mutate(tmp = leadingEdge) %>%
+        group_by(pathway) %>%
+        mutate(leadingEdge = paste(tmp, collapse = "; ")) %>%
+        ungroup() %>%
+        dplyr::select(-tmp) %>%
+        unique() %>%
+        mutate(geneset = x) 
+   
+  return(df)
+}))
+
+write_tsv(alum_vs_mf_export , path = "../data_tables/gsea/P162/Alum_vs_MF59.txt")
+
+
+lapply(ab_conditions[c(1:3,5,6,7)], function(x){
+  
+  df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        filter(pval < 0.05) %>%
+        unnest(cols = "leadingEdge") %>%
+        mutate(tmp = leadingEdge) %>%
+        group_by(pathway) %>%
+        mutate(leadingEdge = paste(tmp, collapse = "; ")) %>%
+        ungroup() %>%
+        dplyr::select(-tmp) %>%
+        unique() %>%
+        mutate(geneset = "CHEA")
+        #filter(pathway == "CREB1") %>%
+        #dplyr::select(pathway, NES, pval) %>%
+        #mutate(outcome = x)
+  write_tsv(df, path = paste("../data_tables/gsea/P162/", x, ".txt", sep =""))
+})
+
+lapply(ab_conditions[c(1:3,5,6,7)], function(x){
+  df <- split_fits_titers[[x]]$topTable[[1]] %>%
+        arrange(desc(t)) %>%
+            mutate(rank = row_number())
+  write_tsv(df, path = paste("../data_tables/contrasts/P162/", x, ".txt", sep =""))
+})
+
+
+
+
+
+  write_tsv(fits_output_adjuvant$topTables$`Alum_post-3rd immunization` %>%
+        arrange(desc(t)) %>%
+            mutate(rank = row_number()), path = "../data_tables/contrasts/P162/Alum_vs_MF59_fits.txt")
+
+
+```

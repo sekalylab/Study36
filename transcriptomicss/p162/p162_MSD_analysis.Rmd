@@ -1,0 +1,428 @@
+---
+title: "P162_MSD"
+author: "Adam Pelletier"
+date: "8/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages(library(rmarkdown))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(broom))
+suppressPackageStartupMessages(library(ggplus))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(writexl))
+suppressPackageStartupMessages(library("MKmisc"))
+suppressPackageStartupMessages(library(ggrepel))
+
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+
+```
+
+### Setup directories 
+
+``` {r dirSetup}
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+inputDir <- setup_dir("input")
+
+outputDir <- setup_dir("output")
+figureDir <- setup_dir(file.path(outputDir,"figures"))
+dataDir <- setup_dir(file.path(outputDir,"data"))
+
+```
+
+### Load patient Data to do statistical testing between groups
+
+Controls have no annotation: they are being excluded from this step, and will be appended later.
+```{r load pData}
+
+
+mergedDF <- do.call("rbind",lapply(list.files("input/MSD", full.names = TRUE), function(x){
+  plate_no <- as.character(read.table(x, nrows = 1, sep = ",")$V1)
+  plate <- read.table(x, sep = ",", skip = 1, header = TRUE) %>%
+            mutate(Plate.Name = plate_no) %>%
+            mutate(Set = str_extract_all(x,"Plate Set [1-3]|TGFb Plate")[[1]])
+  return(plate)
+})) %>%
+  mutate(Timepoint = gsub(",.*", "", Timepoint) ) %>%
+  mutate(Set = gsub(" ", "_", Set))
+
+
+```
+
+
+```{r plot curves}
+plate_plot <- sapply(unique(mergedDF$Set), simplify = FALSE, USE.NAMES = TRUE, function(x){
+        plot <- mergedDF %>%
+                filter(Set == x) %>%
+                mutate(Well_type = ifelse(grepl("S[0-9]+", Sample), "Standard", "Sample")) %>%
+                #mutate(Assay = factor(Plate.Name)) %>%
+                mutate(Calc..Concentration = ifelse(is.na(Calc..Concentration), 0, Calc..Concentration)) %>%
+        
+                ggplot(., aes(x = Signal, y = Calc..Concentration, color = Well_type)) +
+                  geom_point() +
+                  theme_bw() +
+                  ggtitle(x) +
+                  facet_wrap(~Plate.Name+Assay, scales = "free", nrow = 3) 
+        return(plot)
+  
+})
+
+pdf(file = "output/figures/MSD_figs/MSD_curves_p162.pdf", height = 8, width = 22 )
+plate_plot
+dev.off()
+       
+       
+plate_plot
+
+
+
+```
+
+
+```{r replace NAs in data}
+
+sample_MSD <- mergedDF %>%
+    filter(grepl("U[0-9]+", Sample)) %>%  ## filter on samples called U001/2/3/.., which define unknown []
+    dplyr::select(Plate.Name, Sample, Adjuvant, Timepoint,Animal.ID, Assay, Calc..Conc..Mean, Calc..Conc..CV) %>%
+    unique(.) %>%
+    rename(Conc.Mean = "Calc..Conc..Mean") %>%
+    rename(Conc.CV = "Calc..Conc..CV") %>%
+    group_by(Assay) %>%
+    ungroup(.) %>%
+    mutate(Conc.Mean = ifelse(is.na(Conc.Mean), 0, Conc.Mean)) %>%
+    mutate(Conc.Mean = ifelse(is.na(Conc.CV), 0, Conc.Mean)) %>%
+    filter(!is.infinite(Conc.Mean))  %>%
+    unique(.) %>%
+    group_by(Assay) %>%
+    mutate(ND_assay = sum(Conc.Mean)) %>%
+    ungroup(.) %>%
+    filter(ND_assay > 0) %>%
+    mutate(SAMPLE.ID = paste(Animal.ID, Timepoint, sep = "_")) %>%
+    dplyr::select(-Plate.Name, -Sample, -Conc.CV, -ND_assay) %>%
+    spread(Assay, Conc.Mean)
+
+
+
+pData <- sample_MSD %>%
+          dplyr::select(SAMPLE.ID, Adjuvant, Timepoint, Animal.ID) %>%
+          column_to_rownames("SAMPLE.ID")
+exprs <- sample_MSD %>%
+        dplyr::select(4:dim(sample_MSD)[2]) %>%
+        gather(feature, value, -SAMPLE.ID) %>%
+        spread(SAMPLE.ID, value) %>%
+        unique(.) %>%
+        arrange(match(feature, row.names(pData))) %>%
+        column_to_rownames("feature") %>%
+        as.matrix(.)
+exprs <- exprs[,match(row.names(pData),colnames(exprs))]
+
+#Manually curated form Genecards Gen Symbols associated with cytokine names from MSD panels.
+genenames <- data.frame(list("FLT3L" = "FLT3LG",
+                  "Fractalkine" = "CX3CL1",
+                  "I-TAC" = "CXCL11",
+                  "IL-13" = "IL13",
+                  "IL-1b" = "IL1B",
+                  "IL-1R antagonist" = "IL1RN",
+                  "IL-2" = "IL2" ,
+                  "IL-6" = "IL6",
+                  "Eotaxin" = "CCL11",
+                  "GROa" = "CXCL1",
+                  "IFN-a2a" = "IFNA2A",
+                  "IL-12p40" = "IL12B",
+                  "IL-18" = "IL18",
+                  "IP-10" = "CXCL10",
+                  "MCP-1" = "CCL2" ,
+                  "TPO" = "TPO",
+                  "TRAIL" = "TNFSF10",
+                  "TGF-b1" = "TGFB1",
+                  "TGF-B2" = "TGFB2",
+                  "TGF-B3" = "TGFB3")) %>%
+                  gather(Assay, SYMBOL) %>%
+                  mutate(Assay = gsub("[.]", "-", Assay)) %>%
+                  mutate(Assay = gsub("-antagonist", " antagonist", Assay))
+
+fData <- exprs %>%
+          as.data.frame(.) %>%
+          rownames_to_column("Assay") %>%
+          gather(PID, value, -Assay ) %>%
+          inner_join(., genenames, by = "Assay") %>%
+          dplyr::select(Assay, SYMBOL) %>%
+          unique(.) %>%
+          as.data.frame(.) %>%
+          rowid_to_column("rowid") %>%
+          dplyr::select(-rowid) %>%
+          column_to_rownames("Assay") 
+        
+
+
+eset <- ExpressionSet(assayData = as.matrix(exprs),
+                      phenoData = AnnotatedDataFrame(pData),
+                      featureData = AnnotatedDataFrame(fData))
+
+saveRDS(eset, file = "MSD_eset_raw.RDS")
+esetMDS <- readRDS("MSD_eset_raw.RDS")
+
+```
+
+```{r }
+
+# select_highlight_analytes_multi <- list("Red" = c("Fractalkine","TGF-B3", "FLT3L") ,  
+#                                         "Blue" = c("Eotaxin" ,"I-TAC", "IL-18" , "IL-6"))
+select_highlight_analytes_multi <- list("Red" = c("Fractalkine","TGF-B3") ,  
+                                        "Blue" = c("Eotaxin" ,"I-TAC"))
+select_highlight_analytes_univ <- c("TRAIL", "GROa", "TGF-B3", "Fractalkine" )
+
+
+titer_MSD_plasma <- read_excel(path = "input/P162 week 5 cytokines to plasma IgG volcano plot.xlsx") %>%
+                    dplyr::rename(Animal = 1) %>%
+                    dplyr::select(1, 18:78) %>%
+                    gather(outcome,titer, -Animal ) %>%
+                    mutate(outcome = paste("plasma__", outcome, sep = "" )) %>%
+                    spread(outcome, titer)
+
+titer_MSD_mucosa <- read_excel(path = "input/P162 week 5 cytokines to mucosal IgG volcano plot.xlsx") %>%
+                    dplyr::rename(Animal = 1) %>%
+                    dplyr::select(1, 18:72) %>%
+                    gather(outcome,titer, -Animal ) %>%
+                    mutate(outcome = paste("mucosal__", outcome, sep = "" )) %>%
+                    spread(outcome, titer)
+
+derive_gap_stat <- function(titer_df, method = "globalSEmax", B = 100, filename){
+  set.seed(1)
+  mat <- titer_df %>% 
+          gather(Assay, value, -Animal) %>%
+          group_by(Assay) %>%
+          mutate(value = scale(value)) %>%
+          ungroup(.) %>%
+          spread(Assay, value) %>%
+          column_to_rownames("Animal") %>%
+          as.matrix(.) %>%
+          t(.)
+  
+  p_raw <- pheatmap(mat,
+                    scale = "row") 
+  fit <- clusGap(mat, FUN = kmeans , K.max = 15, B = B)
+  Kmax <- maxSE(fit$Tab[, "gap"], fit$Tab[, "SE.sim"], method = method)
+
+  annot <- data.frame(cutree(p_raw$tree_row, k = Kmax)) %>%
+            rownames_to_column("row") %>%
+            rename(clusters = 2) %>%
+            mutate(clusters = as.character(clusters)) %>%
+            column_to_rownames("row")
+ 
+  topScale <- ceiling(max(abs(mat)))
+  
+  colorLS <- colorRampPalette(colors = c("blue", "white", "red"))(500)
+  myBreaks <- seq(-topScale, topScale, length.out=500)
+  p <- pheatmap(mat,
+                    #scale = "row",
+                    annotation_row = annot["clusters"],
+                color = colorLS,
+                height = 10,
+                width = 6,
+                fontsize = 6,
+                cellwidth = 6,
+                cellheight = 6,
+                breaks = myBreaks,
+                filename = filename)
+  
+  med_center <- mat %>%
+                as.data.frame(.) %>%
+                rownames_to_column("rows") %>%
+                inner_join(., annot %>% rownames_to_column("rows"), by = "rows") %>%
+                gather(PID, titer, -rows, -clusters) %>%
+                group_by(clusters, PID) %>%
+                mutate(center = mean(titer)) %>%
+                ungroup(.) %>%
+                dplyr::select(-rows, -titer) %>%
+                unique(.) %>%
+                spread(PID, center) %>%
+                column_to_rownames("clusters") %>%
+                as.matrix(.)
+  titer_df_out <- t(med_center) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Animal.ID") 
+                
+  filename_cl <- gsub(".pdf", "_cluster_centered.pdf", filename)
+  cl_hm <- pheatmap(med_center,
+                    scale = "row",
+                    #annotation_row = annot["clusters"],
+                color = colorLS,
+                height = 10,
+                width = 6,
+                fontsize = 6,
+                cellwidth = 9,
+                cellheight = 9,
+                filename = filename_cl)
+  
+  #return(annot)
+  return(list("mat" = mat,"hm" = p, "annot" = annot, "center" = med_center, "hm_center" = cl_hm, "titer_df" = titer_df_out))
+}
+plasma_Gap <- derive_gap_stat(titer_MSD_plasma, method = "firstmax", B = 500, 
+                     filename = file.path(figureDir, "plasma_titers_clustering.pdf") ) 
+
+plasma_Gap_stats <- t(exprs(esetMDS)) %>%
+                      as.data.frame(.) %>%
+                      rownames_to_column("SampleID") %>%
+                      inner_join(., pData(esetMDS) %>% rownames_to_column("SampleID"), by = "SampleID" ) %>%
+                      left_join(., plasma_Gap$titer_df, by = "Animal.ID") %>%
+                      gather(Assay, Concentration, row.names(exprs(esetMDS))) %>% 
+                      gather(Titer_cluster, zscore, colnames(plasma_Gap$titer_df)[c(2:7)]) %>%
+                      filter(Timepoint == "wk5") %>%
+                      #filter(!is.na(zscore)) %>%
+                      group_by(Assay, Titer_cluster) %>%
+                      do(model = cor.test(.$Concentration, .$zscore, method = "spearman")) %>%
+                      tidy(., model) %>%
+                      ungroup(.) %>%
+                      filter(!is.na(p.value)) %>%
+                      mutate(padj = p.adjust(p.value, method = "BH")) %>%
+                      filter(p.value < 0.05)
+
+                    
+
+
+## Mucosal gap cannot work with missing values.
+
+
+mucosal_Gap <- derive_gap_stat(titer_MSD_mucosa, method = "firstmax", B = 500, 
+                     filename = file.path(figureDir, "mucosal_titers_clustering.pdf") ) 
+
+corMSD_titer <- t(exprs(esetMDS)) %>%
+        as.data.frame(.) %>%
+        rownames_to_column("SampleID") %>%
+        inner_join(., pData(esetMDS) %>% rownames_to_column("SampleID"), by = "SampleID" ) %>%
+        left_join(., titer_MSD_plasma, by =c("Animal.ID" = "Animal")) %>%
+        left_join(., titer_MSD_mucosa, by =c("Animal.ID" = "Animal")) %>%
+        gather(Assay, Concentration, row.names(exprs(esetMDS))) %>% 
+        gather(Titer_outcome, titer, c(colnames(titer_MSD_plasma)[c(2:62)],colnames(titer_MSD_mucosa)[c(2:56)])) %>%
+        filter(Timepoint == "wk5") %>%
+        filter(Adjuvant == "Alum") %>%
+        group_by(Assay, Titer_outcome) %>%
+        do(model = cor.test(.$Concentration, .$titer, method = "spearman")) %>%
+        tidy(., model) %>%
+        ungroup(.) %>%
+        filter(!is.na(p.value)) %>%
+        mutate(padj = p.adjust(p.value, method = "BH")) %>%
+        filter(padj < 0.25) %>%
+        group_by(Assay) %>%
+        mutate(count = n() ) %>%
+        ungroup(.) %>%
+        group_by(Titer_outcome) %>%
+        #filter(padj < 0.05) %>%
+        mutate(count_sig = n_distinct(padj < 0.05)) %>%
+        ungroup(.) %>%
+        filter(count_sig > 0) %>%
+        separate(Titer_outcome, into = c("type", "outcome"), sep = "__", remove = F) %>%
+        mutate(logp = -log(p.value, base = 10)) %>%
+        mutate(highlight = ifelse(Assay %in% c(select_highlight_analytes_multi[["Red"]],
+                                               select_highlight_analytes_multi[["Blue"]]) & padj < 0.05,
+                                  "yes", "no")) %>%
+        mutate(color = ifelse(padj < 0.05 & Assay %in% select_highlight_analytes_multi[["Red"]], "red", 
+                              ifelse(padj < 0.05 & Assay %in% select_highlight_analytes_multi[["Blue"]], "blue", 
+                                     "black"))) %>%
+        # filter(Assay %in% c(select_highlight_analytes_multi[["Red"]],
+        #                                        select_highlight_analytes_multi[["Blue"]])) %>%
+        filter(color != "black") %>%
+        split(., f = .$type)
+
+
+volc_plots_MSD_titers <- sapply(names(corMSD_titer), simplify = F, USE.NAMES = T, function(x){
+    sig_highlight <- corMSD_titer[[x]] %>%
+                    filter(highlight == "yes")
+                    
+    p <- ggplot(corMSD_titer[[x]], aes(x = estimate, y = logp, color = color)) +
+        geom_point() +
+        geom_hline(yintercept = -log(0.05, base = 10), linetype = "dashed") + 
+        scale_x_continuous(name = "Spearman rho", breaks = seq(-1,1, by = 0.2), limits = c(-1,1)) + 
+        scale_color_manual(values = c(black = "black", red= "red", blue = "blue")) +
+        theme_bw() +
+        #geom_label_repel(data = sig_highlight, aes(color = color, label = Assay)) + 
+        ylab("log10 p-value") + 
+        ggtitle(x)
+    return(p)
+})
+
+pdf(file.path(figureDir, "volcano_plot_MSD_titers.pdf"))
+volc_plots_MSD_titers
+dev.off()
+
+# 
+#         ggplot(., aes(x = estimate, y = logp, ))
+        
+        
+
+
+
+
+```
+
+
+```{r }
+
+MSD_5wks <- as.data.frame(exprs(eset)) %>%
+            rownames_to_column("Assay") %>%
+            gather(MSD_Sample_ID, Concentration, -Assay) %>%
+            inner_join(., pData(eset) %>% rownames_to_column("MSD_Sample_ID"), by = "MSD_Sample_ID") %>%
+            filter(Adjuvant == "Alum" & Timepoint == "wk5") %>%
+            dplyr::select(Animal.ID, Assay, Concentration) %>%
+            spread(Assay, Concentration)
+#             inner_join(.,genenames, by = "Assay") %>%
+#             mutate(combo = paste(Animal.ID, SYMBOL, sep =  "_")) %>%
+#             dplyr::select(-SYMBOL, -Animal.ID, -MSD_Sample_ID) %>%
+#             spread(Assay, Concentration)
+# 
+# 
+# 
+# mergedMatrix <- exprs(eset_ALVAC_titer) %>%
+#                 as.data.frame(.) %>%
+#                 rownames_to_column("Illmn.ID") %>%
+#                 gather(Sample.ID, gene_expression, -Illmn.ID) %>%
+#                 inner_join(., pData(eset_ALVAC_titer) %>% rownames_to_column("Sample.ID"), by = "Sample.ID") %>%
+#                 filter(vaccination_time == "post-1st immunization") %>%
+#                 inner_join(., fData(eset_ALVAC_titer) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+#                 mutate(combo = paste(donor,SYMBOL, sep = "_")) %>%
+#                 inner_join(., MSD_5wks, by = "combo") 
+# 
+# 
+# corrMSD_gene <- mergedMatrix %>%
+#                 group_by(Assay) %>%
+#                 do(model = cor.test(.$Concentration, .$gene_expression, method = "spearman" )) %>%
+#                 tidy(., model)
+#                 
+
+CREB_corr <- CREB_GSVA %>%
+            as.data.frame(.) %>%
+            rownames_to_column("signature") %>%
+            gather(sample, zscore, -signature) %>%
+            separate(sample, into = c("Study", "donor", "timepoint"), sep = "_", remove = FALSE) %>%
+            inner_join(., MSD_5wks, by = c("donor" = "Animal.ID")) %>%
+            gather(Assay, Concentration, unique(row.names(exprs(eset)))) %>%
+            group_by(Assay) %>%
+            do(model = cor.test(.$Concentration, .$zscore, method = "spearman")) %>%
+            tidy(., model)
+                
+
+
+```

@@ -1,0 +1,420 @@
+---
+title: "preprocessing_part2_rv144"
+author: "Adam Pelletier"
+date: "7/26/2019"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(forcats))
+suppressPackageStartupMessages(library(janitor))
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+
+```{r }
+
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+
+inputDir <- setup_dir("input")
+outDir <- setup_dir("output")
+
+genesetsDir <- setup_dir("../input/genesets")
+figureDir <- setup_dir(file.path(outDir,"figures"))
+dataOutDir <- setup_dir(file.path(outDir,"data"))
+
+
+```
+
+
+```{r load titer_values}
+
+                 
+                             
+                 
+titers <- read.csv("input/rv144.primary_correlates_scaled_wk26.csv") %>%
+            gather(outcome, value, -pin) %>%
+            filter(grepl("v1v2", outcome)) %>%
+            filter(!grepl("_cat", outcome)) %>%
+            mutate(outcome = gsub("_zollapazner", "", outcome)) %>%
+            spread(outcome, value)
+
+                 
+titers_pilot <- read.csv("input/rv144_data_wk26_correlates_primary_scaled_single_imp.csv") %>%
+            gather(outcome, value, -pin) %>%
+            filter(grepl("v1v2", outcome)) %>%
+            filter(!grepl("_cat", outcome)) %>%
+            mutate(outcome = gsub("_zollapazner", "", outcome)) %>%
+            spread(outcome, value)
+            
+            
+```
+
+
+
+
+```{r average_probes}
+eset_exprs <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Ill_Probe") %>%
+                gather(sampleID, value, -Ill_Probe) %>%
+                inner_join(.,fData(esetBaselined) %>% rownames_to_column("Ill_Probe"), by  ="Ill_Probe") %>%
+                dplyr::select(sampleID, value, Ill_Probe, SYMBOL ) %>%
+                filter(SYMBOL != "---") %>%
+                group_by(sampleID, SYMBOL) %>%
+                mutate(mean = mean(value)) %>%
+                #arrange(value) %>%
+                mutate(row_no = row_number(mean)) %>%
+                filter(row_no == 1) %>%
+                ungroup(.) %>%
+                dplyr::select(sampleID, Ill_Probe, mean) %>%
+                spread(sampleID, mean) %>%
+                column_to_rownames("Ill_Probe")
+
+
+test <- 
+
+
+fData_ave <- fData(eset) %>%
+              rownames_to_column("ID") %>%
+              filter(IlmnID %in% row.names(eset_exprs)) %>%
+              column_to_rownames("ID")
+eset_exprs <- eset_exprs[colnames(exprs(eset))]
+eset_exprs <- eset_exprs[row.names(fData_ave),]
+
+eset_ave <- ExpressionSet(assayData   = as.matrix(eset_exprs),
+                         phenoData   = AnnotatedDataFrame(pData(eset)),
+                         featureData = AnnotatedDataFrame(fData_ave))
+
+
+
+save(eset_ave, file = "eset_averaged.RData")
+
+
+```
+
+```{r average_probes_pilot}
+
+dmso_flag <- pData(eset_pilot) %>%
+              rownames_to_column("file") %>%
+              filter(grepl("DMSO_3h", file)) %>%
+              .$file
+eset_pilot_DMSO <- eset_pilot[,dmso_flag]
+
+#eset_exprs_pilot <- exprs(eset_pilot) %>%
+eset_exprs_pilot <- exprs(eset_pilot_DMSO) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("Ill_Probe") %>%
+                gather(sampleID, value, -Ill_Probe) %>%
+                inner_join(.,fData(eset_pilot_DMSO) %>% rownames_to_column("Ill_Probe"), by  ="Ill_Probe") %>%
+                dplyr::select(sampleID, value, Ill_Probe, SYMBOL ) %>%
+                filter(SYMBOL != "---") %>%
+                group_by(Ill_Probe) %>%
+                mutate(mean_exprs = mean(value)) %>%
+                ungroup() %>%
+                group_by(SYMBOL) %>%
+                mutate(keep = ifelse(mean_exprs == max(mean_exprs), 1, 0)) %>%
+                ungroup() %>%
+                filter(keep == 1) %>%
+                dplyr::select(sampleID, Ill_Probe, value) %>%
+                spread(sampleID, value) %>%
+                column_to_rownames("Ill_Probe")
+
+                # group_by(sampleID, SYMBOL ) %>%
+                # mutate(mean = mean(value)) %>%
+                # mutate(row_no = row_number()) %>%
+                # filter(row_no == 1) %>%
+                # ungroup(.) %>%
+                # dplyr::select(sampleID, Ill_Probe, mean) %>%
+                # spread(sampleID, mean) %>%
+                # column_to_rownames("Ill_Probe")
+
+fData_ave_pilot <- fData(eset_pilot_DMSO) %>%
+#fData_ave_pilot <- fData(eset_pilot) %>%
+              rownames_to_column("ID") %>%
+              filter(IlmnID %in% row.names(eset_exprs_pilot)) %>%
+              column_to_rownames("ID")
+eset_exprs_pilot <- eset_exprs_pilot[colnames(exprs(eset_pilot_DMSO))]
+#eset_exprs_pilot <- eset_exprs_pilot[colnames(exprs(eset_pilot))]
+eset_exprs_pilot <- eset_exprs_pilot[row.names(fData_ave_pilot),]
+
+eset_ave_pilot <- ExpressionSet(assayData   = as.matrix(eset_exprs_pilot),
+                         phenoData   = AnnotatedDataFrame(pData(eset_pilot_DMSO)),
+                         featureData = AnnotatedDataFrame(fData_ave_pilot))
+
+
+
+save(eset_ave_pilot, file = "eset_averaged_pilot.RData")
+
+
+```
+
+```{r eset_ITT}
+pData_ITT <- pData(eset_ave) %>%
+            filter(`HIV infection` == "No") %>%
+            filter(stimulation == "DMSO") %>%
+            filter(treatment == "VACCINE")
+
+
+eset_ITT <- eset_ave[,pData_ITT$`Sample name`]
+
+
+pData_controls_pilot <- pData(eset_ave_pilot) %>%
+                      filter(`HIV infection` == "No") 
+
+eset_controls_pilot <- eset_ave_pilot[,pData_controls_pilot$`Sample name`]      
+
+export_pilot_pins <- data.frame("pin" = unique(pData_controls_pilot$donor)) %>% mutate(V1V2_titer = NA)
+write_csv(export_pilot_pins, path =  file.path(dataOutDir, "PIN_RV144_pilot.csv"))
+
+```
+
+
+
+
+```{r titer_corr}
+
+  pData_corr  <- pData(eset_ITT)[pData(eset_ITT)$donor %in% titers$pin,] %>% 
+                      as.data.frame(.) %>%
+                      rownames_to_column("rows") %>%
+                      inner_join(.,titers, by = c("donor" = "pin")) %>%
+                      mutate(treatment = factor(treatment)) %>%
+                      column_to_rownames("rows")
+
+
+eset_corr_titer <- eset_ITT[,pData_corr$`Sample name`]
+pData(eset_corr_titer) <- pData_corr
+
+
+
+save(eset_corr_titer, file = "eset_corr_titer_corr.RData")
+
+# 
+# 
+# 
+# list_outcomes <- c("r_gp130_SIVmac", "rSIVsm_cV2_PostPre", "rV2_E543-3_Post-_Vax", "rV2_E543-3_Pre-Vax",
+#                    "Serum_IgG_SIVmac251_CV2_post", "Serum_IgG_SIVsmE543_CV2_post" , "SIVmac_rIgG_cV2_Pos-Vax",
+#                    "SIVmac_rIgG_cV2_PostPre", "SIVmac_rIgG_cV2_Pre-Vax", "Challenge_no", "CV2_AB_pos")
+
+wk26_v1v2 <- pData(eset_corr_titer)$primary_v2_gp70_v1v2_wk26
+
+designMat <- model.matrix(~ 0 + wk26_v1v2)
+
+rownames(designMat) <- sampleNames(eset_corr_titer)
+   
+     
+fits <- lmFit(eset_corr_titer,
+             design   = designMat)
+fit2 <- eBayes(fit = fits)
+
+degs <- topTable(fit2, coef = 1, n = Inf )
+#colnames(designMat) <- row.names(pData(eset_corr_titer))
+
+fits_rv144 <- list("fit" = fits, "fit2" = fit2, "topTable" = degs)
+
+save(fits_rv144, file = "fits.RData")
+
+```
+
+
+```{r HIV_pos}
+
+  pData_hiv_pos  <- pData(eset_ave) %>% 
+                      as.data.frame(.) %>%
+                      filter(stimulation == "DMSO") %>%
+                      rownames_to_column("rows") %>%
+                      #inner_join(.,titers, by = c("donor" = "pin")) %>%
+                      mutate(`HIV infection` = ifelse(`HIV infection` == "Yes", "HIV_Pos", "HIV_Neg")) %>%
+                      dplyr::rename(HIV_infection = "HIV infection") %>%
+                      mutate(Treatment_HIVStatus = factor(paste(HIV_infection, treatment, sep =  "_"))) %>%
+                      mutate(HIV_infection = factor(HIV_infection)) %>%
+                      column_to_rownames("rows")
+
+
+eset_hiv_pos <- eset_ave[,pData_hiv_pos$`Sample name`]
+pData(eset_hiv_pos) <- pData_hiv_pos
+
+
+
+save(eset_hiv_pos, file = "eset_hiv_pos.RData")
+
+# 
+# 
+# 
+# list_outcomes <- c("r_gp130_SIVmac", "rSIVsm_cV2_PostPre", "rV2_E543-3_Post-_Vax", "rV2_E543-3_Pre-Vax",
+#                    "Serum_IgG_SIVmac251_CV2_post", "Serum_IgG_SIVsmE543_CV2_post" , "SIVmac_rIgG_cV2_Pos-Vax",
+#                    "SIVmac_rIgG_cV2_PostPre", "SIVmac_rIgG_cV2_Pre-Vax", "Challenge_no", "CV2_AB_pos")
+
+Treatment_HIVStatus <- pData(eset_hiv_pos)$Treatment_HIVStatus
+
+designMat <- model.matrix(~ 0 + Treatment_HIVStatus)
+
+rownames(designMat) <- sampleNames(eset_hiv_pos)
+colnames(designMat) <- gsub("Treatment_HIVStatus", "", colnames(designMat))
+   
+     
+fits <- lmFit(eset_hiv_pos,
+             design   = designMat)
+
+contrastMat <- makeContrasts(contrasts = "HIV_Pos_VACCINE-HIV_Neg_VACCINE", levels = fits$design)
+fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+fit2 <- eBayes(fit = fit2)
+
+degs <- topTable(fit2, coef = 1, n = Inf )
+#colnames(designMat) <- row.names(pData(eset_corr_titer))
+
+fits_rv144_hiv_pos <- list("fit" = fits, "fit2" = fit2, "topTable" = degs)
+
+save(fits_rv144_hiv_pos, file = "fits_hiv_pos.RData")
+
+```
+
+
+```{r pre-postvaxx}
+
+  pData_prepost  <- pData(eset_ave_pilot) %>% 
+                      as.data.frame(.) %>%
+                      rownames_to_column("rows") %>%
+                      filter(!grepl("PLACEBO", treatment)) %>%
+                      mutate(VisitTreatment = factor(paste(visit, treatment , sep  = "_"))) %>%
+                      mutate(donor =  factor(paste("d", as.character(donor), sep = ""))) %>%
+                      #mutate(VisitTreatment = factor(paste(visit, treatment,stimulation , sep  = "_"))) %>%
+                      column_to_rownames("rows")
+
+eset_ave_pilot_vaccine <- eset_ave_pilot[,row.names(pData_prepost)]
+VisitTreatment <- factor(pData_prepost$VisitTreatment, levels = rev(levels(pData_prepost$VisitTreatment)))
+donor <- pData_prepost$donor
+
+designMat <- model.matrix(~0 + donor + VisitTreatment)
+
+rownames(designMat) <- row.names(pData_prepost)
+colnames(designMat) <- gsub("donor", "", colnames(designMat))
+colnames(designMat) <- gsub("VisitTreatment", "", colnames(designMat))
+
+
+fits <- lmFit(eset_ave_pilot_vaccine,
+             design   = designMat)
+
+
+#contrastMat <- makeContrasts(contrasts = "post_VACCINE-pre_VACCINE", levels = fits$design)
+#fit2 <- contrasts.fit(fit = fits)
+fit2 <- eBayes(fit = fits)
+
+degs <- topTable(fit2, coef = "post_VACCINE", n = Inf )
+
+
+fits_rv144_prepost_vaxx <- list("fit" = fits, "fit2" = fit2, "topTable" = degs)
+
+# save(fits_rv144_hiv_pos, file = "fits_hiv_pos.RData")
+
+```
+
+
+```{r pre-postvaxx_env}
+
+  pData_prepost_env  <- pData(esetVehSubstracted) %>% 
+                      as.data.frame(.) %>%
+                      rownames_to_column("rows") %>%
+                      filter(!grepl("PLACEBO", treatment)) %>%
+                      mutate(time = gsub(".*92TH023ENV_", "", `Sample name`)) %>%
+    
+                      mutate(VisitTreatment = paste(visit, treatment , sep  = "_")) %>%
+                      mutate(VisitTreatment = factor(ifelse(visit == "post", paste(VisitTreatment, time, sep ="_"), 
+                                                     VisitTreatment)) ) %>%
+                      
+                      
+                      mutate(donor =  factor(paste("d", as.character(donor), sep = ""))) %>%
+                      #mutate(VisitTreatment = factor(paste(visit, treatment,stimulation , sep  = "_"))) %>%
+                      column_to_rownames("rows")
+
+eset_ave_pilot_vaccine_env <- esetVehSubstracted[,row.names(pData_prepost_env)]
+VisitTreatment_env <- factor(pData_prepost_env$VisitTreatment, levels = rev(levels(pData_prepost_env$VisitTreatment)))
+donor <- pData_prepost_env$donor
+
+designMat <- model.matrix(~0 + donor + VisitTreatment_env)
+
+rownames(designMat) <- row.names(pData_prepost_env)
+colnames(designMat) <- gsub("donor", "", colnames(designMat))
+colnames(designMat) <- gsub("VisitTreatment_env", "", colnames(designMat))
+
+
+fits <- lmFit(eset_ave_pilot_vaccine_env,
+             design   = designMat)
+
+
+#contrastMat <- makeContrasts(contrasts = "post_VACCINE-pre_VACCINE", levels = fits$design)
+#fit2 <- contrasts.fit(fit = fits)
+fit2 <- eBayes(fit = fits)
+
+
+topTables_post_env <- sapply(levels(VisitTreatment_env)[c(2,3)], simplify = F, USE.NAMES = T, function(x){
+  degs <- topTable(fit2, coef = x, n = Inf ) %>%
+          rownames_to_column("probe") %>%
+          filter(probe %in% row.names(eset_ave_pilot)) %>%
+          column_to_rownames("probe")
+  return(degs)
+})
+
+
+
+fits_rv144_prepost_vaxx_env <- list("fit" = fits, "fit2" = fit2, "topTable" = topTables_post_env)
+
+# save(fits_rv144_hiv_pos, file = "fits_hiv_pos.RData")
+
+```
+
+
+
+intersect rv144 and study36 genes for Chip seq validation primers
+```{r export CREB genes}
+rv144_creb_ledge_Export <- rbind(fgsea_analysis_prepost$post_VACCINE$CHEA$output %>% 
+                                       filter(pathway == "CREB1") %>%
+                                       unnest(leadingEdge) %>%
+                                       mutate(condition = "induced") %>%
+                                       dplyr::select(leadingEdge, condition)
+                                       ,
+                                     fgsea_analysis_hiv_pos$`HIV_Pos_VACCINE-HIV_Neg_VACCINE`$CHEA$output %>% 
+                                       filter(pathway == "CREB1") %>%
+                                       unnest(leadingEdge) %>%
+                                        mutate(condition = "HIV_assoc") %>%
+                                       dplyr::select(leadingEdge, condition))
+
+write.table(rv144_creb_ledge_Export,file = "output/data/rv144_combined_CREB1_ledge.txt", sep = "\t", quote = F, row.names = F)
+
+```

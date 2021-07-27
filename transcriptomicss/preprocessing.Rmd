@@ -1,0 +1,767 @@
+---
+title: "GSEA_Study36"
+author: "Adam Pelletier"
+date: "5/30/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages(library(rmarkdown))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(broom))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(Biobase))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(tidyverse))
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+```{r load eset}
+
+load(file = "../macpro/CGC_Project36_4/data/eset_raw_annotated.RData", verbose = TRUE)
+load(file = "../macpro/CGC_Project36_4/data/eset_baselined.Rdata", verbose = TRUE)
+load(file = "reproduce_eset/data/fits.RData")
+```
+
+
+``` {r normalize eset, eval=TRUE, cache=TRUE, echo=TRUE}
+
+eset <- esetRaw
+# order esetRaw by idat file name and features by ProbeID
+eset <- eset[order(as.numeric(fData(eset)$ProbeID)),]
+# impute missing intensities (intensities = 0)
+rawMat <- exprs(eset)
+rawMat[rawMat == 0] <- NA
+capture.output(rawMat <- impute.knn(data = rawMat)$data)
+
+exprs(eset) <- rawMat
+
+# quantile normalized and log2 transform expression
+normMat <- normalizeBetweenArrays(exprs(eset), method = "quantile")
+
+# variance stabilization
+normMat <- log2(normMat)
+exprs(eset) <- normMat
+
+# save normalized ExpressionSet
+save(eset, file ="data/norm.eset.RData")
+
+
+write.csv(fData(eset), quote = F,row.names = T, file = "input/featureAnnotation_study36.csv")
+
+```
+
+
+```{r average technical replicates and subset on G1G2}
+
+sample_reps <- pData(eset) %>%
+                dplyr::select(MonkeyNumberCellTypeTimePoint, SampleID)
+
+expr_matr_ave_temp <- exprs(eset) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("probeID") %>%
+                gather(filename, value, -probeID) %>%
+                inner_join(.,sample_reps, by = c("filename"= "SampleID")) %>%
+                mutate(value = as.numeric(value)) %>%
+                spread(probeID, value) %>%
+                dplyr::select(-filename)
+
+reprows <- expr_matr_ave_temp$MonkeyNumberCellTypeTimePoint
+expr_matr_ave_temp <- expr_matr_ave_temp[,colnames(expr_matr_ave_temp) != "MonkeyNumberCellTypeTimePoint"]
+expr_matr_ave <- data.matrix(expr_matr_ave_temp)
+row.names(expr_matr_ave) <- reprows
+
+expr_matr_ave <- avereps(expr_matr_ave)
+
+filt_SampleID <- pData(eset) %>%
+  dplyr::select(SampleID, MonkeyNumberCellTypeTimePoint) %>%
+  group_by(MonkeyNumberCellTypeTimePoint) %>%
+  mutate(rowid = row_number()) %>%
+  filter(rowid == 1) %>%
+  ungroup(.) %>%
+  dplyr::select(-rowid)
+
+
+G1G2_flag <- pData(eset) %>%
+              as.data.frame(.) %>%
+              filter(StudyGroup %in% c("G1","G2")) %>%
+              .$SampleID
+
+
+averaged_expr_matr_reformat <- expr_matr_ave %>%  
+                                as.data.frame(.) %>%
+                                rownames_to_column("MonkeyNumberCellTypeTimePoint") %>%
+                                inner_join(.,filt_SampleID, by = "MonkeyNumberCellTypeTimePoint") %>%
+                                filter(SampleID %in% G1G2_flag) %>%
+                                dplyr::select(-MonkeyNumberCellTypeTimePoint) %>%
+                                column_to_rownames("SampleID") %>% t(.)
+
+
+
+
+eset_G1G2 <- eset[,colnames(averaged_expr_matr_reformat)]
+exprs(eset_G1G2) <- averaged_expr_matr_reformat
+
+save(eset_G1G2, file ="data/ave.eset_G1G2.RData")
+load("data/ave.eset_G1G2.RData")
+```
+
+
+```{r create baselined eset}
+flag <- pData(eset_G1G2) %>%
+        dplyr::select(MonkeyNumberCellType, SampleID, TimePoint ) %>%
+        remove_rownames() %>%
+        spread(TimePoint, SampleID) %>%
+        gather(VaccineTimepoint, postvax, -MonkeyNumberCellType, -pre ) %>%
+        dplyr::rename(prevax = "pre") %>%
+        filter(!is.na(postvax))
+
+
+esetBaselined <- eset_G1G2[, flag$postvax]
+exprs(esetBaselined) <- exprs(esetBaselined) - exprs(eset_G1G2[, flag$prevax])
+# save postvax-prevax expression
+save(esetBaselined,
+     file = "data/esetBaselined.RData")
+
+load("data/esetBaselined.RData")
+```
+
+
+
+
+
+```{r QC MDS}
+raw_PCA <- prcomp(t(exprs(eset_G1G2)))
+
+annot_raw_pca <- raw_PCA$x %>%
+                  as.data.frame(.) %>%
+                  rownames_to_column("SampleID") %>%
+                  inner_join(., pData(eset), by = "SampleID")
+
+raw_PCA_plot_all <- ggplot(annot_raw_pca, aes(x = PC1, y = PC2, color = TimePoint, shape = CellType)) +
+                geom_point() +
+                theme_bw()
+
+
+
+
+BL_PCA <- prcomp(t(exprs(esetBaselined))) 
+
+annot_BL_pca <- BL_PCA$x %>%
+                  as.data.frame(.) %>%
+                  rownames_to_column("SampleID") %>%
+                  inner_join(., pData(eset), by = "SampleID")
+
+BL_PCA_plot_all <- ggplot(annot_BL_pca, aes(x = PC1, y = PC2, color = TimePoint, shape = CellType)) +
+                geom_point() +
+                theme_bw()
+annot_BL_pca_split <- annot_BL_pca %>% split(., f= .$StudyGroupCellType)
+
+PCA_plot_split <- sapply(names(annot_BL_pca_split), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pca_df <- annot_BL_pca_split[[x]]
+  PCA_plot<- ggplot(pca_df, aes(x = PC1, y = PC2, color = TimePoint, shape = CellType)) +
+                geom_point() +
+                theme_bw() +
+                ggtitle(x)
+  return(PCA_plot)
+})
+
+
+
+
+
+```
+
+```{r contrast vs prevax}
+titers <- read_xlsx("data/titer_table.xlsx") %>%
+          mutate(MonkeyNumber = paste("M", Animal, sep = "")) %>%
+          mutate(MonkeyNumber = gsub("-","_", MonkeyNumber)) %>%
+          dplyr::select(-Timepoint) %>%
+          unique(.) 
+
+
+
+
+split_pData <- pData(eset_G1G2) %>% split(., f = .$StudyGroupCellType)
+
+split_eset <- sapply(names(split_pData), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ids <- split_pData[[x]]$SampleID
+    eset_filt <- eset_G1G2[,ids]
+    return(eset_filt)
+})
+
+
+
+
+split_fits <- sapply(names(split_eset), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pData_tit <- pData(split_eset[[x]]) %>%
+              inner_join(., titers, by ="MonkeyNumber") %>%
+              mutate(StudyGroupCellTypeTimepoint = factor(paste(StudyGroupCellType, TimePoint, sep = "_"))) %>%
+              mutate(StudyGroupCellType = factor(StudyGroupCellType)) %>%
+              mutate(MonkeyNumber = factor(MonkeyNumber)) 
+  StudyGroupCellTypeTimepoint <- pData_tit$StudyGroupCellTypeTimepoint
+  MonkeyNumber <- pData_tit$MonkeyNumber
+  designMat <- model.matrix(~ 0 + MonkeyNumber + StudyGroupCellTypeTimepoint)
+  colnames(designMat) <- gsub("StudyGroupCellTypeTimepoint", "",colnames(designMat))
+  rownames(designMat) <- sampleNames(split_eset[[x]])
+
+  fits <- lmFit(split_eset[[x]],
+               design   = designMat)
+  
+
+  cell_contrasts <- colnames(fits)[grepl("cells", colnames(fits))]
+  celltype <-  unique(gsub("cells_.*$", "cells", cell_contrasts))
+  cell_contrasts_concat <- paste(cell_contrasts, "-", celltype,"_pre", sep ="")
+ 
+
+  
+
+  fit2 <- eBayes(fit = fits)
+  
+  DEG_table <- sapply(cell_contrasts, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ind <- which(colnames(fits) == x)
+    top <- topTable(fit2, coef = ind, n = Inf) %>%
+             dplyr::select(ProbeID, SYMBOL, AveExpr, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)
+    return(top)
+  })
+  
+  out <- list("designMat" = designMat, "StudyGroupCellTypeTimepoint" = StudyGroupCellTypeTimepoint,
+              "MonkeyNumber" = MonkeyNumber, "fits" = fits, "fit2" = fit2, "topTable" = DEG_table)
+  return(out)
+})
+
+pops <- c("DCcells", "Bcells", "Tcells")
+Timepoints <- c("wk0", "wk2", "wk25")
+
+#pops_group <- as.vector(outer(c("G1", "G2"), c("_DCcells", "_Tcells", "_Bcells"), FUN = "paste0"))
+pops_time <- as.vector(outer(pops, c("_wk0", "_wk2", "_wk25"), FUN = "paste0"))
+
+probe_select <- sapply(pops_time, simplify = FALSE, USE.NAMES = TRUE, function(x){
+   pops_group <- as.vector(outer(c("G1_", "G2_"), x, FUN = "paste0"))
+   filtering <- do.call("rbind", lapply(pops_group, function(y){
+      filtered_pop <- gsub("_wk.*", "", y)
+      
+     #filtered_fits <- split_fits[grepl(filtered_pop, names(split_fits))]
+      df  <- split_fits[[filtered_pop]]$topTable[[y]] %>%
+                as.data.frame(.) %>%
+                mutate(condition = y)
+      return(df)
+   })) %>%
+      group_by(ProbeID) %>%
+      mutate(mean = mean(AveExpr)) %>%
+      ungroup(.) %>%
+      group_by(BROAD.Gene.Symbol) %>%
+      mutate(max_probe = ifelse(mean == max(mean), "yes", "no")) %>%
+      filter(max_probe == "yes") %>%
+      ungroup(.) %>%
+      .$ProbeID %>%
+      unique(.)
+   
+   return(filtering)
+   
+})
+
+
+save(split_fits, file = "data/postvaxx_vs_prevaxx.RData")
+load(file = "data/postvaxx_vs_prevaxx.RData")
+```
+
+
+
+
+```{r corr vs titers}
+
+titers <- read_xlsx("data/titer_table.xlsx") %>%
+          mutate(MonkeyNumber = paste("M", Animal, sep = "")) %>%
+          mutate(MonkeyNumber = gsub("-","_", MonkeyNumber)) %>%
+          dplyr::select(-Timepoint) %>%
+          unique(.) 
+
+
+
+
+# split_pData_titers <- pData(esetBaselined) %>% 
+#                     #filter(StudyGroup == "G2") %>%
+#                     filter(TimePoint != "pre") %>%
+#                     mutate(StudyGroupCellTypeTimePoint = factor(paste(StudyGroupCellType, TimePoint, sep ="_"))) %>%
+#                     split(., f = .$StudyGroupCellTypeTimePoint)
+
+split_pData_titers <- pData(esetBaselined) %>% 
+                    #filter(StudyGroup == "G2") %>%
+                    filter(TimePoint != "pre") %>%
+                    mutate(CellTypeTimePoint = factor(paste(CellType, TimePoint, sep ="_"))) %>%
+                    split(., f = .$CellTypeTimePoint)
+
+
+ids <- split_pData_titers$DCcells_wk2$SampleID
+
+
+
+
+
+
+split_eset_titers <- sapply(names(split_pData_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ids <- split_pData_titers[[x]]$SampleID
+    eset_filt <- esetBaselined[,ids]
+    return(eset_filt)
+})
+
+
+split_fits_titers <- sapply(names(split_eset_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pData_tit <- pData(split_eset_titers[[x]]) %>%
+              inner_join(., titers, by ="MonkeyNumber") %>%
+              #mutate(StudyGroupCellTypeTimepoint = factor(paste(StudyGroupCellType, TimePoint, sep = "_"))) %>%
+              mutate(StudyGroupCellType = factor(StudyGroupCellType)) %>%
+              mutate(MonkeyNumber = factor(MonkeyNumber)) 
+
+  V1V2_IgG_W14 <- pData_tit$V1V2_IgG_W14
+  V1V2_IgG_W25 <- pData_tit$V1V2_IgG_W25
+  V1V2_IgG_W53 <- pData_tit$V1V2_IgG_W53
+  V1V2_IgG_W55 <- pData_tit$V1V2_IgG_W55
+  
+  titer_outcomes <- list("V1V2_IgG_W14"= V1V2_IgG_W14, "V1V2_IgG_W25" = V1V2_IgG_W25, 
+       "V1V2_IgG_W53" = V1V2_IgG_W53, "V1V2_IgG_W55" = V1V2_IgG_W55 )
+  
+  fits_titers <- sapply(names(titer_outcomes), simplify = FALSE, USE.NAMES = TRUE, function(y){
+      titer_out <- titer_outcomes[[y]]
+      designMat <- model.matrix(~ 0 + titer_out)
+      colnames(designMat) <- paste(x, y, sep = "__")
+      rownames(designMat) <- sampleNames(split_eset_titers[[x]])
+    
+      fits <- lmFit(split_eset_titers[[x]],
+                   design   = designMat)
+      fit2 <- eBayes(fit = fits)
+    
+      DEG_table <- sapply(colnames(fits), simplify = FALSE, USE.NAMES = TRUE, function(z){
+        ind <- which(colnames(fits) == z)
+        top <- topTable(fit2, coef = ind, n = Inf) %>%
+                 dplyr::select(ProbeID, AveExpr, SYMBOL, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)
+        return(top)
+      })
+    out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTable" = DEG_table)
+    return(out)
+  })
+  
+  #colnames(designMat) <- gsub("StudyGroupCellTypeTimepoint", "",colnames(designMat))
+  out <- fits_titers
+  return(out)
+})
+save(file = "data/split_fits_titers.RData", split_fits_titers)
+
+load(file = "data/split_fits_titers.RData")
+
+
+
+creb_deg <- list()
+for(i in names(split_fits_titers)){
+  #temp <- split_fits_titers_ave[[i]]
+  for(j in names(split_fits_titers[[i]])){
+    #temp2 <- split_fits_titers_ave[[i]][[j]]
+    for(k in names(split_fits_titers[[i]][[j]]$topTable)){
+      temp <- split_fits_titers[[i]][[j]]$topTable[[k]] %>%
+              filter(BROAD.Gene.Symbol == "CREB1")
+      creb_deg[[k]] <- temp
+    }
+  }
+}
+
+for(i in names(creb_deg)[grepl("DC", names(creb_deg))]){
+  print(i)
+  print(creb_deg[[i]])
+}
+
+
+
+creb_deg_alvac <- list()
+for(i in names(split_fits)){
+  #temp <- split_fits_titers_ave[[i]]
+  for(j in names(split_fits[[i]]$topTable)){
+    #temp2 <- split_fits_titers_ave[[i]][[j]]
+    temp <- split_fits[[i]]$topTable[[j]] %>%
+              filter(BROAD.Gene.Symbol == "CREB1")
+    creb_deg_alvac[[j]] <- temp
+  }
+}
+
+for(i in names(creb_deg_alvac)[grepl("DC", names(creb_deg_alvac))]){
+  print(i)
+  print(creb_deg_alvac[[i]])
+}
+
+```
+
+
+
+```{r titer_plots}
+titer_plot_longit <-  titers %>%
+          gather(titer_outcome, titer, -Animal, -MonkeyNumber, -Group) %>%
+          dplyr::filter(grepl("IgG", titer_outcome)) %>%
+          mutate(logTiters = log10(titer)) %>%
+          ggplot(., aes(x = titer_outcome, y = logTiters, color = Animal, shape = Group)) +
+          geom_point() +
+          geom_line(aes(group = Animal)) + 
+          theme_bw()
+
+
+pdf("output/figures/titer_plot_time.pdf")
+titer_plot_longit
+dev.off()
+
+```
+
+
+
+
+
+```{r average_eset}
+
+sample_reps_ave <- pData(esetBaselined) %>%
+                dplyr::select(MonkeyNumberCellType, SampleID)
+
+expr_matr_ave_temp_ave <- exprs(esetBaselined) %>%
+                as.data.frame(.) %>%
+                rownames_to_column("probeID") %>%
+                gather(filename, value, -probeID) %>%
+                inner_join(.,sample_reps_ave, by = c("filename"= "SampleID")) %>%
+                mutate(value = as.numeric(value)) %>%
+                spread(probeID, value) %>%
+                dplyr::select(-filename)
+
+reprows_ave <- expr_matr_ave_temp_ave$MonkeyNumberCellType
+expr_matr_ave_temp_ave <- expr_matr_ave_temp_ave[,colnames(expr_matr_ave_temp_ave) != "MonkeyNumberCellType"]
+expr_matr_ave_alltime <- data.matrix(expr_matr_ave_temp_ave)
+row.names(expr_matr_ave_alltime) <- reprows_ave
+
+expr_matr_ave_alltime <- avereps(expr_matr_ave_alltime)
+
+filt_SampleID_ave <- pData(esetBaselined) %>%
+  dplyr::select(SampleID, MonkeyNumberCellType) %>%
+  group_by(MonkeyNumberCellType) %>%
+  mutate(rowid = row_number()) %>%
+  filter(rowid == 1) %>%
+  ungroup(.) %>%
+  dplyr::select(-rowid)
+
+
+G1G2_flag_ave <- pData(esetBaselined) %>%
+              as.data.frame(.) %>%
+              filter(StudyGroup %in% c("G1","G2")) %>%
+              .$SampleID
+
+
+averaged_expr_matr_reformat_alltime <- expr_matr_ave_alltime %>%  
+                                as.data.frame(.) %>%
+                                rownames_to_column("MonkeyNumberCellType") %>%
+                                #gather(MonkeyNumberCellTypeTimePoint, value, -ProbeID) %>%
+                                inner_join(.,filt_SampleID_ave, by = "MonkeyNumberCellType") %>%
+                                filter(SampleID %in% G1G2_flag) %>%
+                                #spread(SampleID, value) %>%
+                                dplyr::select(-MonkeyNumberCellType) %>%
+                                column_to_rownames("SampleID") %>% t(.)
+
+
+
+
+eset_G1G2_ave <- esetBaselined[,colnames(averaged_expr_matr_reformat_alltime)]
+exprs(eset_G1G2_ave) <- averaged_expr_matr_reformat_alltime
+
+save(eset_G1G2_ave, file ="data/ave.eset_G1G2_averaged_all_timepoints.RData")
+load("data/ave.eset_G1G2_averaged_all_timepoints.RData")
+
+```
+
+
+
+```{r contrast averagedEset vs titers}
+
+split_pData_titers_ave <- pData(eset_G1G2_ave) %>%
+                    #filter(StudyGroup == "G2") %>%
+                    filter(TimePoint != "pre") %>%
+                    mutate(CellTypeTimePoint = factor(paste(CellType, TimePoint, sep ="_"))) %>%
+                    #mutate(StudyGroupCellTypeTimePoint = paste(StudyGroupCellType, TimePoint, sep ="_")) %>%
+                    split(., f = .$CellTypeTimePoint)
+
+
+split_eset_titers_ave <- sapply(names(split_pData_titers_ave), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ids <- split_pData_titers_ave[[x]]$SampleID
+    eset_filt <- eset_G1G2_ave[,ids]
+    return(eset_filt)
+})
+
+
+split_fits_titers_ave <- sapply(names(split_eset_titers_ave), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pData_tit <- pData(split_eset_titers_ave[[x]]) %>%
+              inner_join(., titers, by ="MonkeyNumber") %>%
+              #mutate(StudyGroupCellType = factor(paste(StudyGroupCellType, TimePoint, sep = "_"))) %>%
+              mutate(CellType = factor(CellType)) %>%
+              mutate(MonkeyNumber = factor(MonkeyNumber))
+
+  V1V2_IgG_W14 <- pData_tit$V1V2_IgG_W14
+  V1V2_IgG_W25 <- pData_tit$V1V2_IgG_W25
+  V1V2_IgG_W53 <- pData_tit$V1V2_IgG_W53
+  V1V2_IgG_W55 <- pData_tit$V1V2_IgG_W55
+
+  titer_outcomes <- list("V1V2_IgG_W14"= V1V2_IgG_W14, "V1V2_IgG_W25" = V1V2_IgG_W25,
+       "V1V2_IgG_W53" = V1V2_IgG_W53, "V1V2_IgG_W55" = V1V2_IgG_W55 )
+
+  fits_titers <- sapply(names(titer_outcomes), simplify = FALSE, USE.NAMES = TRUE, function(y){
+      titer_out <- titer_outcomes[[y]]
+      designMat <- model.matrix(~ 0 + titer_out)
+      colnames(designMat) <- paste(x, y, sep = "__")
+      rownames(designMat) <- sampleNames(split_eset_titers_ave[[x]])
+
+      fits <- lmFit(split_eset_titers_ave[[x]],
+                   design   = designMat)
+      fit2 <- eBayes(fit = fits)
+
+      DEG_table <- sapply(colnames(fits), simplify = FALSE, USE.NAMES = TRUE, function(z){
+        ind <- which(colnames(fits) == z)
+        top <- topTable(fit2, coef = ind, n = Inf) %>%
+                 dplyr::select(ProbeID, AveExpr , SYMBOL, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)
+        return(top)
+      })
+    out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTable" = DEG_table)
+    return(out)
+  })
+
+  #colnames(designMat) <- gsub("StudyGroupCellTypeTimepoint", "",colnames(designMat))
+  out <- fits_titers
+
+  return(out)
+})
+save(file = "data/split_fits_titers_from_averaged_exprs.RData", split_fits_titers_ave)
+load(file = "data/split_fits_titers_from_averaged_exprs.RData")
+
+creb_deg_ave <- list()
+for(i in names(split_fits_titers_ave)){
+  #temp <- split_fits_titers_ave[[i]]
+  for(j in names(split_fits_titers_ave[[i]])){
+    #temp2 <- split_fits_titers_ave[[i]][[j]]
+    for(k in names(split_fits_titers_ave[[i]][[j]]$topTable)){
+      temp <- split_fits_titers_ave[[i]][[j]]$topTable[[k]] %>%
+              filter(BROAD.Gene.Symbol == "CREB1")
+      creb_deg_ave[[k]] <- temp
+    }
+  }
+}
+
+
+for(i in names(creb_deg_ave)[grepl("DC", names(creb_deg_ave))]){
+  print(i)
+  print(creb_deg_ave[[i]])
+}
+```
+
+
+
+
+
+
+
+
+```{r G2 vs G1}
+
+
+
+
+pData_G1G2 <- pData(esetBaselined) %>% 
+                    #filter(StudyGroup == "G2") %>%
+                    filter(TimePoint != "pre") %>%
+                    #mutate(StudyGroupCellTypeTimePoint = paste(StudyGroupCellType, TimePoint, sep ="_")) %>%
+                    #mutate(CellTypeTimePoint = paste(CellType, TimePoint, sep ="_")) %>%
+                    mutate(StudyGroupCellTypeTimepoint = factor(paste(StudyGroupCellType, TimePoint, sep = "_"))) %>%
+                    mutate(StudyGroupCellType = factor(StudyGroupCellType)) %>%
+                    mutate(MonkeyNumber = factor(MonkeyNumber)) 
+
+
+StudyGroupCellTypeTimepoint <- pData_G1G2$StudyGroupCellTypeTimepoint
+levels(StudyGroupCellTypeTimepoint) <- rev(levels(StudyGroupCellTypeTimepoint))
+
+eset_BL_G1G2 <- esetBaselined[,pData_G1G2$SampleID]
+
+designMat <- model.matrix(~ 0 + StudyGroupCellTypeTimepoint)
+colnames(designMat) <- gsub("StudyGroupCellTypeTimepoint", "", colnames(designMat))
+rownames(designMat) <- sampleNames(eset_BL_G1G2)
+
+fits <- lmFit(eset_BL_G1G2,
+                   design   = designMat)
+
+
+cell_populations <- unique(gsub("G[12]_","",colnames(fits)))
+
+
+contrastLS <- unlist(lapply(cell_populations, function(x){
+  column_levs <- factor(colnames(fits))
+  #levels(column_levs) <- rev(levels(column_levs))
+  filt <- column_levs[grepl(paste(x,"$", sep = ""), column_levs)]
+  contrast <- paste(filt, collapse  ="-")
+  return(contrast)
+}))
+  
+
+contrastMat <- makeContrasts(contrasts = contrastLS, levels = colnames(fits))
+fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+fit2 <- eBayes(fit = fit2)
+
+DEG_table_G1G2 <- sapply(colnames(fit2), simplify = FALSE, USE.NAMES = TRUE, function(x){
+        ind <- which(colnames(fit2) == x)
+        top <- topTable(fit2, coef = ind, n = Inf) %>%
+                 dplyr::select(ProbeID, SYMBOL, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)
+        return(top)
+      })
+
+
+for(i in names(DEG_table_G1G2)){
+  print(i)
+  print(head(as.data.frame(DEG_table_G1G2[[i]]), n =10))
+}
+```
+
+
+```{r population_constrasts}
+
+pData_pops <- pData(esetBaselined) %>% 
+                    #filter(StudyGroup == "G2") %>%
+                    filter(TimePoint != "pre") %>%
+                    #mutate(CellTypeTimepoint = paste(CellType, Timepoint, sep = "_")) %>%
+                    mutate(CellTypeTimePoint = factor(paste(CellType, TimePoint, sep ="_"))) #%>%
+                    split(., f = .$CellTypeTimePoint)
+eset_pops <- esetBaselined[,pData_pops$SampleID]
+pData(eset_pops) <- pData_pops
+
+ids <- split_pData_titers$DCcells_wk2$SampleID
+
+
+CellTypeTimePoint <- pData_pops$CellTypeTimePoint
+ 
+designMat <- model.matrix(~ 0 + CellTypeTimePoint)
+colnames(designMat) <- gsub("CellTypeTimePoint","", colnames(designMat))
+rownames(designMat) <- pData_pops$SampleID
+
+fits <- lmFit(exprs(eset_pops),
+             design   = designMat)
+
+
+timepoints <- c("wk0$", "wk2$", "wk25$")
+
+pops <- c("DCcells", "Tcells", "Bcells")
+
+
+
+cross_pops_contrasts <- c()
+for(i in timepoints){
+  filt_list <- colnames(fits)[grepl(i, colnames(fits))]
+  filt_list <- factor(filt_list[grepl(paste(pops, collapse = "|"), filt_list)])
+  test <- combn(filt_list, m = 2, simplify = FALSE)
+  test2 <- lapply(test, function(x){
+    cont_string <- paste(x[1], x[2], sep = "-")
+    return(cont_string)
+  })
+  cross_pops_contrasts <- c(cross_pops_contrasts, unlist(test2))
+}
+
+
+
+cross_time_contrasts <- c()
+for(i in pops){
+  filt_list <- colnames(fits)[grepl(i, colnames(fits))]
+  filt_list <- factor(filt_list[grepl(paste(pops, collapse = "|"), filt_list)])
+  levels(filt_list) <- rev(levels(filt_list))
+  test <- combn(filt_list, m = 2, simplify = FALSE)
+  test2 <- lapply(test, function(x){
+    cont_string <- paste(x[1], x[2], sep = "-")
+    return(cont_string)
+  })
+  cross_time_contrasts <- c(cross_time_contrasts, unlist(test2))
+}
+
+
+
+pop_contrasts <- c(cross_pops_contrasts, cross_time_contrasts)
+
+contrastMat <- makeContrasts(contrasts = pop_contrasts, levels = fits$design)
+fit2 <- contrasts.fit(fit = fits, contrasts = contrastMat)
+fit2 <- eBayes(fit = fit2)
+
+
+deg_pops_contrast <- sapply(colnames(fit2), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  filt_fData <- fData(eset_pops) %>% dplyr::select(ProbeID, BROAD.Gene.Symbol)
+  df <- topTable(fit2, coef = which(colnames(fit2) == x), n = Inf) %>%
+        rownames_to_column("Ill.ID") %>% 
+        inner_join(., filt_fData, by = c("Ill.ID" = "ProbeID")) %>%
+        column_to_rownames("Ill.ID")
+        
+  return(df)
+})
+
+
+
+
+
+
+split_eset_pops <- sapply(names(split_pData_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    ids <- split_pData_titers[[x]]$SampleID
+    eset_filt <- esetBaselined[,ids]
+    return(eset_filt)
+})
+
+
+split_fits_titers <- sapply(names(split_eset_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pData_tit <- pData(split_eset_titers[[x]]) %>%
+              inner_join(., titers, by ="MonkeyNumber") %>%
+              #mutate(StudyGroupCellTypeTimepoint = factor(paste(StudyGroupCellType, TimePoint, sep = "_"))) %>%
+              mutate(StudyGroupCellType = factor(StudyGroupCellType)) %>%
+              mutate(MonkeyNumber = factor(MonkeyNumber)) 
+
+  V1V2_IgG_W14 <- pData_tit$V1V2_IgG_W14
+  V1V2_IgG_W25 <- pData_tit$V1V2_IgG_W25
+  V1V2_IgG_W53 <- pData_tit$V1V2_IgG_W53
+  V1V2_IgG_W55 <- pData_tit$V1V2_IgG_W55
+  
+  titer_outcomes <- list("V1V2_IgG_W14"= V1V2_IgG_W14, "V1V2_IgG_W25" = V1V2_IgG_W25, 
+       "V1V2_IgG_W53" = V1V2_IgG_W53, "V1V2_IgG_W55" = V1V2_IgG_W55 )
+  
+  fits_titers <- sapply(names(titer_outcomes), simplify = FALSE, USE.NAMES = TRUE, function(y){
+      titer_out <- titer_outcomes[[y]]
+      designMat <- model.matrix(~ 0 + titer_out)
+      colnames(designMat) <- paste(x, y, sep = "__")
+      rownames(designMat) <- sampleNames(split_eset_titers[[x]])
+    
+      fits <- lmFit(split_eset_titers[[x]],
+                   design   = designMat)
+      fit2 <- eBayes(fit = fits)
+    
+      DEG_table <- sapply(colnames(fits), simplify = FALSE, USE.NAMES = TRUE, function(z){
+        ind <- which(colnames(fits) == z)
+        top <- topTable(fit2, coef = ind, n = Inf) %>%
+                 dplyr::select(ProbeID, SYMBOL, BROAD.Gene.Symbol, logFC, t, P.Value, adj.P.Val)
+        return(top)
+      })
+    out <- list("designMat" = designMat, "fits" = fits, "fit2" = fit2, "topTable" = DEG_table)
+    return(out)
+  })
+  
+  #colnames(designMat) <- gsub("StudyGroupCellTypeTimepoint", "",colnames(designMat))
+  out <- fits_titers
+    
+  return(out)
+})
+save(file = "data/split_fits_titers.RData", split_fits_titers)
+
+load(file = "data/split_fits_titers.RData")
+
+
+
+```
+

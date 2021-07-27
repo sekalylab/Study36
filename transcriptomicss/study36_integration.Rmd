@@ -1,0 +1,2340 @@
+---
+title: "study_36_integration"
+author: "Adam Pelletier"
+date: "7/17/2019"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(broom))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(MASS))
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+```{r titers_plot}
+
+pData(esetBaselined)
+
+
+```
+
+
+```{r all_DEG_list}
+post_vaxx_degs <- c()
+for(i in names(split_fits)){
+  for(j in names(split_fits[[i]]$topTable))
+    #concat <- paste(i,j, sep = "__")
+  deg <- split_fits[[i]]$topTable[[j]] %>%
+          filter(P.Value < 0.05) %>%
+          #filter(adj.P.Val < 0.05) %>%
+          filter(BROAD.Gene.Symbol != "") %>%
+          .$BROAD.Gene.Symbol
+  post_vaxx_degs <- c(post_vaxx_degs, deg)
+}
+
+
+titer_corr_degs <- c()
+for(i in names(split_fits_titers)){
+  for(j in names(split_fits_titers[[i]]))
+    concat <- paste(i,j, sep = "__")
+  deg <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+          filter(P.Value < 0.05) %>%
+          #filter(adj.P.Val < 0.05) %>% 
+          filter(BROAD.Gene.Symbol %in% post_vaxx_degs) %>%
+          filter(BROAD.Gene.Symbol != "") %>%
+          .$BROAD.Gene.Symbol
+  titer_corr_degs <- unique(c(titer_corr_degs, deg))
+}
+
+
+
+```
+
+```{r biomart_GO_annot}
+mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")
+
+
+ensembl_id <-  getBM(attributes= c("hgnc_symbol","ensembl_gene_id"),
+                  filters = 'hgnc_symbol', values = titer_corr_degs, mart = mart)
+
+
+
+
+go_ids <-  getBM(attributes= c("ensembl_gene_id", "go_id", "name_1006", "namespace_1003"),
+                  filters = 'ensembl_gene_id', values = ensembl_id$ensembl_gene_id, mart = mart) 
+
+
+immune_filter <- c("CHEMOKINE","CYTOKINE", "CXCR[0-9]+", "CXCL[0-9]+", "CCR[0-9]+", "CCL[0-9]+","T( |)CELLS","B( |)CELLS",
+                   "FOLLICULAR", "DENDRITIC", "TREG", "TH(1|2)", "TGF(-|)B",
+                   "TNF(A|AR|1R|R)", "FRACTALKINE", "EOTAXIN", "INTERLEUKIN", "IL(-|)[0-9]+", "IFN", "INTERFERON", "MHC", 
+                   "ANTIGEN( |_)PRESENTATION", "ANTIBODY", "TCR", "BCR", "NFKB", "RELB", "TLR[0-9]", 
+                   "TOLL-LIKE", "MYD88", "TRAF", "INFLAMMASOME", "NLR", "NOD-LIKE", "CTLA", "PD(|-)(|L)1","4(|-)1BB","MCSF")
+immune_filter_comb <- paste(c(immune_filter, tolower(immune_filter)), collapse = "|")
+
+go_ids_immune_temp <- go_ids %>%
+                filter(grepl(immune_filter_comb,name_1006)) %>%
+                dplyr::select(go_id, name_1006) %>%
+                unique(.)
+
+writexl::write_xlsx(go_ids_immune_temp, path = file.path(dataOutDir, "go_term_category_filters.xlsx"))
+
+
+
+go_ids_immune <- read_excel(path = file.path(dataOutDir, "go_term_category_filters_upd.xlsx")) %>%
+                  filter(keep == 1)
+
+immune_gene_ids <- merge(ensembl_id,go_ids, by  = "ensembl_gene_id") %>%
+                  filter(go_id %in% go_ids_immune$go_id) %>%
+                  .$hgnc_symbol %>%
+                  unique(.)
+
+
+### GO Accession numbers were taken at https://www.ebi.ac.uk/QuickGO/term/GO:0003700 for transcription factor activity
+
+tf_go_ids <- c("GO:0003700","GO:0000130", "GO:0001071", "GO:0001130", "GO:0001131", 
+                                  "GO:0001151", "GO:0001199", "GO:0001204")
+tf_gene_ids <- merge(ensembl_id, go_ids, by = "ensembl_gene_id") %>%
+              filter(go_id %in% tf_go_ids) %>%
+              .$hgnc_symbol %>%
+                  unique(.)
+
+
+filtered_gene_ids <- c(immune_gene_ids, tf_gene_ids)
+
+
+```
+
+```{r titerPLots}
+
+titer_df_plot <- titers %>%
+                gather(outcome, value, -Animal, -Group, -MonkeyNumber) %>%
+                dplyr::filter(grepl("V1V2", outcome)) %>%
+                mutate(value = ifelse(value < 0, 0.1, value)) %>%
+                mutate(value = log(value)) %>%
+                separate(outcome, into = c("ab","Isotype","Timepoint"), sep = "_") %>%
+                mutate(Timepoint = factor(Timepoint))
+                
+  
+titer_plot <- ggplot(titer_df_plot, aes(x = Timepoint, y = value)) +
+                geom_line(aes(color = MonkeyNumber)) + 
+                geom_point(aes(color = MonkeyNumber, shape = Group)) 
+            
+  
+
+```
+
+
+
+```{r gsva_CREB_sig}
+
+gsva_CREB <- list()
+for(i in names(fgsea_intersect_no_kegg_CREB)){
+  gs_list <- fgsea_intersect_no_kegg_CREB[[i]]$CHEA$output %>%
+        dplyr::select(pathway, leadingEdge) %>%
+        split(., f=.$pathway)
+  split_name <- str_split(i, pattern = "__")[[1]]
+  pop <- split_name[1]
+  #print(pop)
+  gsva_CREB[[i]] <- do.call("rbind",sapply(names(gs_list), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      probe_GS <- fData(split_eset_titers[[pop]]) %>% 
+                  rownames_to_column("Ill_ProbeID") %>% 
+                  dplyr::select(Ill_ProbeID, BROAD.Gene.Symbol )
+      
+      filt_matrix <- exprs(split_eset_titers[[pop]]) %>%
+                      as.data.frame(.) %>%
+                      rownames_to_column("Ill_ProbeID") %>%
+                      inner_join(.,probe_GS, by = "Ill_ProbeID") %>%
+                      filter(BROAD.Gene.Symbol %in% gs_list[[x]]$leadingEdge[[1]]) %>%
+                      dplyr::select(-Ill_ProbeID) %>%
+                      gather(sample, value, -BROAD.Gene.Symbol) %>%
+                      group_by(BROAD.Gene.Symbol, sample) %>%
+                      summarise(mean = mean(value)) %>%
+                      ungroup(.) %>%
+                      #dplyr::select(-value) %>%
+                      spread(sample, mean) %>%
+                      column_to_rownames("BROAD.Gene.Symbol") %>%
+                      as.matrix(.)
+      gs <- list(gs_list[[x]]$leadingEdge[[1]])
+      names(gs)[1] <- x
+      
+      gsva_out <- gsva(expr = filt_matrix, gset.idx.list = gs, method = "zscore") 
+      return(gsva_out)
+  }))
+}
+
+
+```
+
+
+
+```{r correlate_with_degs}
+
+
+cell_pop_timepoints_deg_matrix <- list()
+for(i in names(split_fits_titers)){
+  for(j in names(split_fits_titers[[i]])){
+    concat <- paste(i,j, sep = "__")
+  deg <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+          filter(P.Value < 0.05) %>%
+          #filter(adj.P.Val < 0.05) %>% 
+          filter(BROAD.Gene.Symbol %in% post_vaxx_degs) %>%
+          filter(BROAD.Gene.Symbol != "") %>%
+          .$BROAD.Gene.Symbol
+  
+  if(!is.null(gsva_CREB[[concat]])){
+    gsva_mat <- t(gsva_CREB[[concat]]) %>% 
+                  as.data.frame(.) %>% 
+                  rownames_to_column("SampleID") %>% 
+                  dplyr::rename(CREB1_CHEA = "CREB1")
+    
+
+    probe_GS <- fData(split_eset_titers[[i]]) %>%
+                rownames_to_column("Ill_ProbeID") %>%
+                dplyr::select(Ill_ProbeID, BROAD.Gene.Symbol )
+  
+    cell_pop_timepoints_deg_matrix[[i]] <- exprs(split_eset_titers[[i]]) %>%
+                                      as.data.frame(.) %>%
+                                      rownames_to_column("Ill_ProbeID") %>%
+                                      inner_join(.,probe_GS, by = "Ill_ProbeID" ) %>%
+                                      filter(BROAD.Gene.Symbol %in% deg) %>%
+                                      dplyr::select(-Ill_ProbeID) %>%
+                                      gather(sample, value, -BROAD.Gene.Symbol) %>%
+                                      filter(BROAD.Gene.Symbol %in% filtered_gene_ids) %>%
+                                      group_by(BROAD.Gene.Symbol,sample) %>%
+                                      mutate(value = mean(value)) %>%
+                                      unique(.) %>%
+                                      ungroup(.) %>%
+                                      spread(sample, value) %>%
+                                      column_to_rownames("BROAD.Gene.Symbol") %>%
+                                      t(.) %>%
+                                      as.data.frame(.) %>%
+                                      rownames_to_column("SampleID") %>%
+                                      inner_join(.,gsva_mat, by = "SampleID") %>%
+                                      gather(CREB_module, zscore, colnames(gsva_mat)[2:length(gsva_mat)]) %>%
+                                      gather(Gene, gene_expression, -CREB_module, -zscore, -SampleID)
+    }
+  }
+}
+
+
+
+
+# 
+# 
+# for(i in names(split_fits_titers)){
+#   for(j in names(split_fits_titers[[i]])){
+#     concat <- paste(i,j, sep = "__")
+#     
+#   deg <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+#           filter(P.Value < 0.05) %>%
+#           #filter(adj.P.Val < 0.05) %>% 
+#           filter(BROAD.Gene.Symbol %in% post_vaxx_degs) %>%
+#           filter(BROAD.Gene.Symbol != "") %>%
+#           .$BROAD.Gene.Symbol
+#   
+#   if(!is.null(gsva_CREB[[concat]])){
+#     gsva_mat <- t(gsva_CREB[[concat]]) %>% as.data.frame(.) %>% 
+#                   rownames_to_column("SampleID") %>% 
+#                   dplyr::rename(CREB1_CHEA = "CREB1")
+#     
+# 
+#     probe_GS <- fData(split_eset_titers[[i]]) %>%
+#                 rownames_to_column("Ill_ProbeID") %>%
+#                 dplyr::select(Ill_ProbeID, BROAD.Gene.Symbol )
+#     
+#     
+#     
+#     
+#     # 
+#     # cell_pop_timepoints_deg_matrix[[i]] <- exprs(split_eset_titers[[i]]) %>%
+#     #                                   as.data.frame(.) %>%
+#     #                                   rownames_to_column("Ill_ProbeID") %>%
+#     #                                   inner_join(.,probe_GS, by = "Ill_ProbeID" ) %>%
+#     #                                   filter(BROAD.Gene.Symbol %in% deg) %>%
+#     #                                   dplyr::select(-Ill_ProbeID) %>%
+#     #                                   gather(sample, value, -BROAD.Gene.Symbol) %>%
+#     #                                   filter(BROAD.Gene.Symbol %in% filtered_gene_ids) %>%
+#     #                                   group_by(BROAD.Gene.Symbol,sample) %>%
+#     #                                   mutate(value = mean(value)) %>%
+#     #                                   unique(.) %>%
+#     #                                   ungroup(.) %>%
+#     #                                   spread(sample, value) %>%
+#     #                                   column_to_rownames("BROAD.Gene.Symbol") %>%
+#     #                                   t(.) %>%
+#     #                                   as.data.frame(.) %>%
+#     #                                   rownames_to_column("SampleID") %>%
+#     #                                   inner_join(.,gsva_mat, by = "SampleID") %>%
+#     #                                   gather(CREB_module, zscore, colnames(gsva_mat)[2:length(gsva_mat)]) %>%
+#     #                                   gather(Gene, gene_expression, -CREB_module, -zscore, -SampleID)
+#     }
+#   }
+# }
+# 
+
+
+
+  
+  
+module_gene_corr <- do.call("rbind", lapply(names(cell_pop_timepoints_deg_matrix), function(x){
+    corr_out <- cell_pop_timepoints_deg_matrix[[x]] %>%
+                  group_by(CREB_module, Gene) %>%
+                  do(model = cor.test(.$gene_expression, .$zscore , method="spearman") ) %>%
+                  tidy(.,model) %>%
+                  ungroup(.) %>%
+                  group_by(CREB_module) %>%
+                  mutate(adj.p = p.adjust(p.value, method = "BH")) %>%
+                  ungroup(.) %>%
+                  filter(p.value < 0.05) %>%
+                  mutate(condition = x)
+    return(corr_out)
+  
+}))    
+
+
+
+gene_consistency_list <- module_gene_corr %>%
+                        mutate(split = str_extract(condition, ".*cells")) %>%
+                        split(., f=.$split)
+                        
+gene_consistency_tables <- sapply(names(gene_consistency_list), simplify = FALSE, USE.NAMES = TRUE, function(x){
+     consistency_table <-  gene_consistency_list[[x]] %>%
+                            group_by(condition, Gene) %>%
+                            mutate(n_pos_condition = n_distinct(CREB_module[sign(estimate) == 1])) %>%
+                            mutate(n_neg_condition = n_distinct(CREB_module[sign(estimate) == -1])) %>%
+                            ungroup(.) %>%
+                            mutate(n_conditions = n_distinct(condition)) %>%
+                            group_by(Gene) %>%
+                            mutate(n_pos = n_distinct(condition[n_pos_condition > 0])) %>%
+                            mutate(n_neg = n_distinct(condition[n_neg_condition > 0])) %>%
+                            mutate(sum_n = n_pos + n_neg) %>%
+                            filter(n_neg >= 1 | n_pos >= 1) %>%
+                            mutate(constant_direction = ifelse(n_pos > 0 & n_neg > 0, "no", "yes"))
+     return(consistency_table)
+})
+
+
+gene_consistency_tables_staggered <- sapply(names(gene_consistency_list), simplify = FALSE, USE.NAMES = TRUE, function(x){
+     consistency_table <-  gene_consistency_list[[x]] %>%
+                            #group_by(condition, Gene) %>%
+                            mutate(sign = as.character(sign(estimate))) %>%
+                            #mutate(n_neg_condition = n_distinct(CREB_module[sign(estimate) == -1])) %>%
+                            #ungroup(.) %>%
+                            mutate(n_conditions = n_distinct(condition)) %>%
+                            dplyr::select(Gene, condition, split, sign, n_conditions) %>%
+                            unique() %>%
+                            group_by(Gene, sign) %>%
+                            mutate(n = n_distinct(condition)) %>%
+                            ungroup() %>%
+                            #filter(Gene == "CD1E") #%>%
+                            filter(sign == "1") 
+                            #mutate(n = sum(condition[sign < 0])) %>%
+                            # mutate(sum_n = n_pos + n_neg)# %>%
+                            # filter(n_neg >= 1 | n_pos >= 1)# %>%
+                            # mutate(constant_direction = ifelse(n_pos > 0 & n_neg > 0, "no", "yes"))
+     return(consistency_table)
+})
+
+
+lapply(names(gene_consistency_tables_staggered), function(x){
+  writeLines(unique(gene_consistency_tables_staggered[[x]]$Gene), 
+             con = file.path(dataOutDir, paste(x, "_CREB_corr_clueGO_list.txt", sep ="")))
+})
+
+writeLines(unique(gene_consistency_tables_staggered$DCcells$Gene), con = "DC_UP_CREB.txt")
+gene_consistency_tables_staggered$DCcells
+
+
+```
+
+
+
+
+```{r gene_node_tables}
+
+
+gene_node_tables_stats <- sapply(names(gene_consistency_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      split_fits_titers_filt <- split_fits_titers[grepl(x, names(split_fits_titers))]
+      all_cond <- do.call("rbind",lapply(names(split_fits_titers_filt), function(y){
+        cond_nested <- do.call("rbind", lapply(names(split_fits_titers_filt[[y]]), function(z){
+                concat <- paste(y, z, sep ="__")
+                      df<- split_fits_titers_filt[[y]][[z]]$topTable[[concat]]
+                      
+                      return(df)
+        })) 
+      }))
+   
+      stats <- all_cond %>%
+              mutate(sign = sign(t)) %>%
+              group_by(BROAD.Gene.Symbol) %>%
+              
+              mutate(homogenous_direct = ifelse(n_distinct(sign) == 1, "yes", "no")) %>%
+              filter(homogenous_direct == "yes") %>%
+              summarize(mean_T = mean(t))
+              
+      return(stats)
+})  
+
+test <- sapply(names(gene_consistency_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      split_fits_titers_filt <- split_fits_titers[grepl(x, names(split_fits_titers))]
+      all_cond <- do.call("rbind",lapply(names(split_fits_titers_filt), function(y){
+        cond_nested <- do.call("rbind", lapply(names(split_fits_titers_filt[[y]]), function(z){
+                concat <- paste(y, z, sep ="__")
+                      df<- split_fits_titers_filt[[y]][[z]]$topTable[[concat]] %>% mutate(contrast = concat)
+                      
+                      return(df)
+        })) 
+      }))
+   
+      stats <- all_cond %>%
+               mutate(sign = sign(t)) #%>%
+              #filter(BROAD.Gene.Symbol == "FLT3LG") 
+              # group_by(BROAD.Gene.Symbol) %>%
+              # 
+              # mutate(homogenous_direct = ifelse(n_distinct(sign) == 1, "yes", "no")) %>%
+              # filter(homogenous_direct == "yes") %>%
+              # summarize(mean_T = mean(t))
+              
+      return(stats)
+})  
+
+
+
+chea <- getGmt(geneset_list$CHEA)
+chea_CREB_genes <- geneIds(chea[names(chea) == "CREB1"])[[1]]
+
+
+encode <- getGmt("input/genesets/ENCODE-tf.gmt")
+encode_CREB_genes <- geneIds(encode[names(encode) == "CREB1"])[[1]]
+transfac <- getGmt("input/genesets/TRANSFAC.gmt")
+transfac_CREB_genes <- geneIds(transfac[names(transfac) == "CREB1"])[[1]]
+jasper <- getGmt("input/genesets/JASPER-tf.gmt")
+jasper_CREB_genes <- geneIds(jasper[names(jasper) == "CREB1"])[[1]]
+
+
+## Read in Creb1 putative targets from https://doi.org/10.1073/pnas.0501076102 .
+## 
+
+
+mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")
+mart2 = useMart("ENSEMBL_MART_ENSEMBL", dataset = "mmusculus_gene_ensembl")
+
+
+putative_CREB_genes <- read_excel("input/01076Table3.xls", skip = 1) %>%
+                        filter(`CRE Flag` != "none")
+
+# mgi_ids <- split(putative_CREB_genes$`Genbank accessions`, ceiling(seq_along(putative_CREB_genes$`Genbank accessions`)/10))
+# 
+# ensembl_id_mouse <- lapply(mgi_ids, function(x){
+#   print(x)
+#   ensembl_id_mouse <-  getBM(attributes= c("mgi_symbol","ensembl_gene_id", "refseq_mrna"),
+#                   filters = 'mgi_symbol', values = x, mart = mart2)
+#   return(ensembl_id_mouse)
+# })
+
+
+ensembl_id_mouse <-  getBM(attributes= c("ensembl_gene_id", "mgi_symbol", "refseq_mrna"),
+                  filters = 'refseq_mrna', values = putative_CREB_genes$`Genbank accessions`, mart = mart2)
+
+human_orthologs <- getBM(attributes= c("ensembl_gene_id", "hsapiens_homolog_ensembl_gene"),
+                  filters = "ensembl_gene_id", values = ensembl_id_mouse$ensembl_gene_id, mart = mart2)
+  
+human_orthologs_symbols <- getBM(attributes= c("ensembl_gene_id", "hgnc_symbol"),
+                  filters = "ensembl_gene_id", 
+                  values = human_orthologs[human_orthologs$hsapiens_homolog_ensembl_gene != "",]$hsapiens_homolog_ensembl_gene,
+                  mart = mart)
+
+human_orthologs_symbols <- human_orthologs_symbols[human_orthologs_symbols$hgnc_symbol != "",]
+putative_CREB_gs <- GeneSet(geneIds=as.character(unique(human_orthologs_symbols$hgnc_symbol)),
+                           setIdentifier = "putative_CREB_targets" ,
+                 setName= "putative_CREB_targets",
+                 creationDate = date(),
+                 shortDescription = "PNAS_putative_CREB1_targets_dataset",
+                 urls = "https://doi.org/10.1073/pnas.0501076102" ,
+                 organism = "Homo_sapiens")
+toGmt(putative_CREB_gs, con = "input/genesets/putative_CREB1_targets.gmt")
+
+human_orthologs
+
+
+
+gene_node_tables <- sapply(names(gene_node_tables_stats), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    node_table <- gene_node_tables_stats[[x]] %>%
+                    group_by(BROAD.Gene.Symbol) %>%
+                    mutate(node_value = sign(mean_T)) %>%
+                    dplyr::rename(node = "BROAD.Gene.Symbol") %>%
+                    dplyr::select(node, node_value) %>%
+                    inner_join(., gene_consistency_tables[[x]], by = c("node" = "Gene")) %>%
+                    dplyr::select(node, node_value, sum_n) %>%
+                    unique(.) %>%
+                    mutate(CREB_target = ifelse(node %in% chea_CREB_genes, "yes", "no")) %>%
+                    mutate(is_tf = ifelse(node %in% tf_gene_ids, "yes", "no")) %>%
+                    mutate(node_type = "gene") %>%
+                    ungroup(.) %>%
+                    inner_join(., ensembl_id, by = c("node" = "hgnc_symbol")) %>%
+                    inner_join(., go_ids, by = "ensembl_gene_id") %>%
+                    filter(go_id %in% c(tf_go_ids, go_ids_immune$go_id)) %>%
+                    dplyr::select(-ensembl_gene_id) %>%
+                    group_by(node) %>%
+                    mutate(go_term = paste(name_1006, collapse = ", ")) %>%
+                    mutate(go_ids = paste(go_id, collapse = ", ")) %>%
+                    ungroup(.) %>%
+                    dplyr::select(-namespace_1003, -name_1006, -go_id) %>%
+                    unique(.) %>%
+                    dplyr::select(node, everything()) %>%
+                    mutate(network_group = ifelse(grepl("MHC|mhc|presentation",go_term), "MHC/Antigen Presentation",
+                                                  "Other")) %>%
+                    mutate(network_group = ifelse(grepl("chemokine|cytokine|interferon|interleukin|TNF|TGF|",go_term),
+                                                  "Chemokine/Cytokine", 
+                                                  network_group)) %>%
+                    mutate(network_group = ifelse(grepl("transcription", go_term), "Transcription factor", 
+                                                        network_group))
+                    
+  return(node_table)
+})
+
+
+```
+
+
+```{r GO_term_based_edge_generation}
+
+gene_network_tables_GO <- sapply(names(gene_node_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    
+    go_table <- gene_node_tables[[x]] %>%
+                      inner_join(., ensembl_id, by = c("node" = "hgnc_symbol")) %>%
+                      inner_join(., go_ids, by = "ensembl_gene_id") %>%
+                      filter(go_id %in% c(tf_go_ids, go_ids_immune$go_id)) %>%
+                      dplyr::select(-ensembl_gene_id) %>%
+                      unique(.) %>%
+                      dplyr::rename(go_term = "name_1006")
+
+    go_list <- sapply(unique(go_table$go_term), simplify = FALSE, USE.NAMES = TRUE, function(y){
+        out <- go_table[go_table$go_term == y,]$node 
+                
+        return(out)
+    })
+    go_list_filt <- go_list[lapply(go_list, length) > 1]
+    
+    go_list_combn <- do.call("rbind",lapply(names(go_list_filt), function(y){
+    #go_list_combn <- sapply(names(go_list_filt), simplify = FALSE, function(y){
+          combn <- data.frame(t(combn(go_list_filt[[y]], m = 2))) %>% 
+                    mutate(annotation = y) %>%
+                    dplyr::rename(source = "X1" ) %>%
+                    dplyr::rename(target = "X2") %>%
+                    mutate(edge_type = "go_term") %>%
+                    mutate(target = as.character(target)) %>%
+                    mutate(source = as.character(source)) %>%
+                    mutate(combo = paste(source, target, sep = "_")) 
+                   
+          return(combn)
+    }))
+     tally_list <- sapply(unique(c(go_list_combn$target,go_list_combn$source)), simplify = FALSE, USE.NAMES = TRUE, function(z){
+                      #print(z)
+                      temp_df <- go_list_combn[go_list_combn$target == z | go_list_combn$source == z ,]
+                      partner_list <- unique(c(temp_df$source, temp_df$target))
+                      partner_list <- partner_list[partner_list != z]  
+                      return(partner_list)
+          })
+     
+     combo_tally_df <- do.call("rbind",lapply(go_list_combn$combo, function(z){
+              split <- str_split(z, pattern = "_")
+              source <- split[[1]][1]
+              target <- split[[1]][2]
+              out <- data.frame("combo" = z, "spring" = length(intersect(tally_list[[source]],tally_list[[target]])))
+              return(out)
+     }))
+     
+     go_combn_filt <- go_list_combn %>%
+                      inner_join(., combo_tally_df, by = "combo") %>%
+                      #mutate(combo_annot = paste(combo, annotation, sep = "_")) %>%
+                      group_by(combo) %>%
+                      mutate(n_conn = n()) %>%
+                      ungroup(.) %>%
+                      mutate(spring = spring + n_conn) %>%
+                      mutate(edge_value = 1) %>%
+                      #group_by(combo) %>%
+                      group_by(combo) %>%
+                      mutate(annotation_concat = paste(annotation, collapse = ", ")) %>%
+                      ungroup(.) %>%
+                      dplyr::select(source, target, edge_value, edge_type, annotation_concat,  spring ) %>%
+                      unique(.) %>%
+                      dplyr::rename(annotation = "annotation_concat") %>%
+                      mutate(edge_color = "green")
+        
+    return(go_combn_filt)
+})
+
+
+
+```
+
+
+
+
+
+```{r module_node_table}
+
+
+module_node_tables <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+  grep_filt <- paste(x,"cells", sep = "")
+  filt_fgsea <- fgsea_intersect_no_kegg_CREB[grepl(grep_filt, names(fgsea_intersect_no_kegg_CREB))]
+  comb_df <- do.call("rbind",lapply(names(filt_fgsea), function(y){
+    filt_c3 <- filt_fgsea[[y]]$CHEA$output %>%
+                  mutate(condition = y) %>%
+                  dplyr::select(-leadingEdge) 
+    return(filt_c3)
+  }))
+  
+  comb_df_summ <- comb_df %>%
+              group_by(pathway) %>%
+              summarise(node_value = mean(NES)) %>%
+              mutate(node_value = node_value / max(node_value)) %>%
+              mutate(pathway = paste(pathway, "_CHEA", sep ="")) %>%
+              dplyr::rename(node = "pathway") %>%
+              mutate(sum_n = 4) %>%
+              mutate(CREB_target = "no") %>%
+              mutate(is_tf = "yes") %>%
+              mutate(node_type = "module") %>%
+              mutate(go_term = "none") %>%
+              mutate(go_ids  ="none") %>%
+              mutate(network_group = "CREB_geneset")
+  return(comb_df_summ)
+}) 
+
+
+
+```
+
+
+```{r module_cross_corr}
+# test <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+#   pop <- paste(x,"cells", sep ="")
+#   pData <- pData(esetBaselined)
+#   pop_CREB <- lapply(gsva_CREB[grepl(pop,names(gsva_CREB))], function(y){
+#         test <- y %>% 
+#           rownames_to_column("gs") %>%
+#           gather()
+#   })
+# 
+# })
+# 
+# module_network_table <- sapply(names(module_node_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+#     edge_table <- data.frame(t(combn(module_node_tables[[x]]$node, m= 2))) %>%
+#                     dplyr::rename(source = "X1") %>%
+#                     dplyr::rename(target = "X2") %>%
+#                     mutate(edge_value = 1) %>%
+#                     mutate(spring = 10) %>%
+#                     mutate(edge_type = "module_link") %>%
+#                     mutate(annotation = "module_association") %>%
+#                     mutate(edge_color = "gray") %>%
+#                     dplyr::select(source, target, edge_value, edge_type, annotation, spring, edge_color)
+#     return(edge_table)
+# })
+
+
+```
+
+
+```{r merged_node_tables}
+merged_node_table <- sapply(names(gene_node_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pop <- gsub("cells","", x)
+  merged_table <- do.call("rbind",list(module_node_tables[[pop]], gene_node_tables[[x]]))
+  return(merged_table)
+})
+
+
+#writexl::write_xlsx(merged_node_table, path = file.path(outDir, "node_tables_CREB.xlsx"))
+
+lapply(names(merged_node_table), function(x){
+  write.table(merged_node_table[[x]], file = file.path(outDir, paste("node_table_CREB_",x, ".csv" , sep = "")), quote = FALSE,
+                                                     row.names = FALSE, sep = "!")
+})
+
+```
+
+
+
+```{r network_table}
+network_tables <- sapply(names(gene_consistency_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pop <- paste(x, "cells", sep = "")
+  net_out <- gene_consistency_tables[[x]] %>%
+              dplyr::rename(source = "CREB_module") %>%
+              dplyr::rename(target = "Gene") %>%
+              dplyr::rename(edge_value = "estimate") %>%
+              dplyr::select(source,target, edge_value) %>%
+              filter(source %in% merged_node_table[[x]]$node) %>%
+              filter(target %in% merged_node_table[[x]]$node) %>%
+              mutate(edge_type = "spearman_rho") %>%
+              mutate(annotation = "regression") %>%
+              mutate(edge_color = ifelse(edge_value >0 , "red", "blue")) %>%
+              mutate(spring = 1) %>%
+              bind_rows(gene_network_tables_GO[[x]]) %>%
+              ungroup(.)
+              #bind_rows(module_network_table[[pop]]) 
+              
+  return(net_out)
+})
+
+
+
+
+
+
+lapply(names(network_tables), function(x){
+  write.csv(network_tables[[x]], file = file.path(outDir, paste("network_tables_CREB_",x, ".csv" , sep = "")), quote = FALSE,
+                                                     row.names = FALSE)
+})
+```
+
+
+```{r node pathways}
+
+no_pathways <- sapply(names(merged_node_table), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  df <- merged_node_table[[x]] %>%
+          filter(node_type == "gene") %>%
+          dplyr::select(-go_ids, -go_term) %>%
+          inner_join(., ensembl_id, by = c("node" = "hgnc_symbol")) %>%
+          inner_join(., go_ids, by = "ensembl_gene_id") %>%
+          filter(go_id %in% c(tf_go_ids, go_ids_immune$go_id)) %>%
+          dplyr::select(-ensembl_gene_id) %>%
+          unique(.) %>%
+          arrange(name_1006)
+  return(df)
+})
+
+lapply(names(no_pathways), function(x){
+  write.csv(no_pathways[[x]], file = file.path(outDir, paste("node_pathways_",x, ".csv" , sep = "")), quote = FALSE,
+                                                     row.names = FALSE)
+})
+
+common_nodes <- intersect(no_pathways$Bcells$node, intersect(no_pathways$DCcells$node, no_pathways$Tcells$node))
+common_node_pathways <- do.call("rbind", no_pathways) %>%
+                        filter(node %in% common_nodes) %>%
+                        unique(.) %>%
+                        dplyr::rename("go_term" = name_1006) %>%
+                        dplyr::select(-namespace_1003, -network_group, -node_value, -sum_n, -node_type) %>%
+                        unique(.) %>%
+                        group_by(node) %>%
+                        mutate(n_go_ids = n_distinct(go_id)) %>%
+                        dplyr::select(node, n_go_ids, everything()) %>%
+                        arrange(n_go_ids, node)
+                    
+
+
+write.table(common_node_pathways, file = file.path(outDir, "common_nodes_all_pops.csv"), quote = FALSE, row.names = FALSE, sep = "!")                        
+
+
+
+
+common_node_pathways
+```
+
+
+```{r intersect_network_with_tfs}
+
+gene_nodes <- sapply(names(network_tables), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  df <- network_tables[[x]] %>%
+        filter(target == "gene")
+  return(df)
+})
+
+
+gsva_TFs <- list()
+for(i in names(fgsea_intersect_no_kegg)){
+  gs_list <- fgsea_intersect_no_kegg[[i]]$CHEA$output %>%
+        filter(pval < 0.05) %>%
+        dplyr::select(pathway, leadingEdge) %>%
+        split(., f=.$pathway)
+  split_name <- str_split(i, pattern = "__")[[1]]
+  pop <- split_name[1]
+  #print(pop)
+  gsva_TFs[[i]] <- do.call("rbind",sapply(names(gs_list), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      probe_GS <- fData(split_eset_titers[[pop]]) %>% 
+                  rownames_to_column("Ill_ProbeID") %>% 
+                  dplyr::select(Ill_ProbeID, BROAD.Gene.Symbol )
+      
+      filt_matrix <- exprs(split_eset_titers[[pop]]) %>%
+                      as.data.frame(.) %>%
+                      rownames_to_column("Ill_ProbeID") %>%
+                      inner_join(.,probe_GS, by = "Ill_ProbeID") %>%
+                      filter(BROAD.Gene.Symbol %in% gs_list[[x]]$leadingEdge[[1]]) %>%
+                      dplyr::select(-Ill_ProbeID) %>%
+                      gather(sample, value, -BROAD.Gene.Symbol) %>%
+                      group_by(BROAD.Gene.Symbol, sample) %>%
+                      summarise(mean = mean(value)) %>%
+                      ungroup(.) %>%
+                      #dplyr::select(-value) %>%
+                      spread(sample, mean) %>%
+                      column_to_rownames("BROAD.Gene.Symbol") %>%
+                      as.matrix(.)
+      gs <- list(gs_list[[x]]$leadingEdge[[1]])
+      names(gs)[1] <- x
+      
+      gsva_out <- gsva(expr = filt_matrix, gset.idx.list = gs, method = "zscore") 
+      return(gsva_out)
+  }))
+}
+
+CREB_TF_corr <- sapply(names(gsva_CREB), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    df <- as.data.frame(gsva_CREB[[x]]) %>%
+          rownames_to_column("module") %>%
+          bind_rows(.,as.data.frame(gsva_TFs[[x]]) %>% rownames_to_column("module")) %>%
+          gather(sample, score, -module) %>%
+          unique(.) %>%
+          spread(module, score) %>%
+          gather(module, score, -sample, -CREB1) %>%
+          group_by(module) %>%
+          do(model = cor.test(.$CREB1, .$score, method ="spearman")) %>%
+          tidy(., model) %>%
+          ungroup(.) 
+    return(df)
+})
+
+
+average_CREB_TF_corr <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    pop <- paste(x, "cells", sep = "")
+    pop_regex <- paste(pop,"_wk[02]_", sep ="")
+    CREB_TF_corr_filt <- do.call("rbind",CREB_TF_corr[grepl(pop_regex, names(CREB_TF_corr))] ) %>%
+                          group_by(module) %>%
+                          summarise(mean_rho = mean(estimate),
+                                    sum_pos_rho = sum(estimate > 0),
+                                    sum_neg_rho = sum(estimate < 0),
+                                    sum_sig = sum(p.value < 0.05)) %>%
+                          filter(sum_sig >= 7) %>%   ##choosing an arbitrary value to show TFs that are 
+                          filter(sum_pos_rho == 0 | sum_neg_rho == 0) %>% ##correlateed with CREB at 7/8 conditions
+                          mutate(source = "CREB1_CHEA") %>%
+                          dplyr::rename(target = "module") %>%
+                          dplyr::rename(edge_value = "mean_rho") %>%
+                          dplyr::select(source, target, edge_value) %>%
+                          #top_n(.,25, edge_value) %>%
+                          mutate(edge_type = "spearman_rho",
+                                 annotation = "regression_module",
+                                 edge_color = ifelse(edge_value > 0, "red", "blue"),
+                                 spring = 1) 
+                          
+    return(CREB_TF_corr_filt)
+})
+
+
+
+TF_ledge <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    filt_fgsea <- fgsea_analysis2[grepl(x, names(fgsea_analysis2))]
+    #filt_fgsea <- fgsea_analysis[grepl(x, names(fgsea_analysis_titers))]
+    mergedDF_raw <- do.call("rbind",lapply(names(filt_fgsea), function(y){
+        df <-  filt_fgsea[[y]]$CHEA$output %>%
+                    filter(pval < 0.05) %>%
+                    unnest() %>%
+                    filter(pathway %in% average_CREB_TF_corr[[x]]$target) %>%
+                    dplyr::filter(leadingEdge %in% network_tables[[paste(x,"cells", sep = "")]]$target) %>%
+                    group_by(pathway) %>%
+                    mutate(count = n_distinct(leadingEdge)) %>%
+                    ungroup(.) %>%
+                    mutate(condition = y)
+        return(df)
+    }))
+
+    mergedDF <- mergedDF_raw %>%
+                group_by(pathway, leadingEdge) %>%
+                mutate(count_gene = n()) %>%
+                ungroup(.) %>%
+                filter(count_gene > 1)  %>%
+                group_by(pathway) %>%
+                mutate(count_conditions = n_distinct(leadingEdge)) %>%
+                ungroup(.) 
+    #return(mergedDF)         
+
+    df_summ <- mergedDF %>%
+                dplyr::select(pathway, count_conditions) %>%
+                unique(.) %>%
+                top_n(count_conditions, n = 15)
+  
+    selected_tfs <- mergedDF %>%
+                    filter(pathway %in% df_summ$pathway) %>%
+                    dplyr::select(pathway, leadingEdge) %>%
+                    unique(.) %>%
+                    dplyr::rename(source = "pathway") %>%
+                    dplyr::rename(target = "leadingEdge") %>%
+                    filter(source != "CREB1") %>%
+                    mutate(edge_value = 1,
+                           edge_type = "leadingEdge_overlap",
+                           annotation = "TF_target",
+                           edge_color = "turquoise",
+                           spring = 1) %>%
+                    mutate(node_name = target) %>%
+                    mutate(target = paste(source, node_name, sep ="_")) 
+                    
+    return(selected_tfs)
+  
+})
+
+
+TF_ledge_raw <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    filt_fgsea <- fgsea_analysis2[grepl(x, names(fgsea_analysis2))]
+    #filt_fgsea <- fgsea_analysis[grepl(x, names(fgsea_analysis_titers))]
+    mergedDF_raw <- do.call("rbind",lapply(names(filt_fgsea), function(y){
+      
+        net_filt <- network_tables[[paste(x,"cells", sep = "")]] %>%
+                    filter(edge_value > 0)
+        df <-  filt_fgsea[[y]]$CHEA$output %>%
+                    filter(pval < 0.05) %>%
+                    unnest() %>%
+                    filter(pathway %in% average_CREB_TF_corr[[x]]$target) %>%
+                    dplyr::mutate(inLedge = ifelse(leadingEdge %in% net_filt$target,
+                                                   1, 0)) %>%
+                    # group_by(pathway) %>%
+                    # mutate(count = n_distinct(leadingEdge)) %>%
+                    # ungroup(.) %>%
+                    mutate(condition = y)
+        return(df)
+    }))
+    
+    mergedDF <- mergedDF_raw %>%
+                group_by(pathway, leadingEdge) %>%
+                mutate(count_gene = n()) %>%
+                ungroup(.) %>%
+                filter(count_gene > 1)  %>%
+                #filter(pathway == "GATA2") %>%
+                group_by(pathway) %>%
+                dplyr::select(pathway, leadingEdge, inLedge) %>%
+                unique(.) %>%
+                mutate(ledge_CREB_overlap = sum(inLedge)) %>%
+                ungroup(.) %>%
+                dplyr::select(pathway, ledge_CREB_overlap) %>%
+                unique(.)
+
+  
+    return(mergedDF)         
+})
+#exporting unfiltered list of correlated TFs to cross reference with the RV144 network. obtained from the mergedDF
+#WriteXLS::WriteXLS(TF_ledge, "output/data/TFs_correlated_to_CREB.xlsx")
+
+
+WriteXLS::WriteXLS(TF_ledge_raw, "output/data/TFs_correlated_to_CREB_unfiltered.xlsx")
+
+test <- intersect(unique(TF_ledge$DC[TF_ledge$DC$source == "GATA2",]$node_name), merged_node_table$DCcells$node)
+test2 <- intersect(network_tables$DCcells$target, test)
+
+
+
+```
+
+
+
+
+```{r new network_tables_w_TF}
+
+network_tables_upd <- sapply(names(TF_ledge), simplify = F, USE.NAMES = T, function(x){
+  pop <- paste(x,"cells", sep = "")
+
+  return(df)
+})
+
+network_tables_TF <- sapply(names(TF_ledge), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pop <- paste(x,"cells", sep = "")
+  TF_ledge_strip <- TF_ledge[[x]] %>%
+              dplyr::select(target, node_name)
+  df <- network_tables[[pop]] %>%
+        inner_join(., TF_ledge_strip, by =c("target" = "node_name")) %>%
+        mutate(node_name = target) %>%
+        mutate(target = target.y) %>%
+        dplyr::select(-target.y)
+  
+  creb_df <- average_CREB_TF_corr[[x]] %>%
+              mutate(node_name = target)
+  merged <- do.call("rbind",list(df, TF_ledge[[x]], creb_df)) %>%
+              as.data.frame(.) %>%
+              filter(annotation %in% c("regression", "TF_target", "regression_module")) %>%
+              filter(sign(edge_value) == 1)
+  return(merged)
+
+})
+
+lapply(names(network_tables_TF), function(x){
+  write.csv(network_tables_TF[[x]], file = file.path(outDir, paste("network_tables_CREB_with_TF_v2_",x, ".csv" , sep = "")), 
+                                      quote = FALSE, row.names = FALSE)
+  
+})
+
+
+```
+
+
+
+
+```{r node_tables_with TFs}
+
+TF_node_table <- sapply(names(TF_ledge), simplify = FALSE,USE.NAMES = TRUE, function(x){
+  filt_fgsea <- fgsea_analysis2[grepl(x,names(fgsea_analysis2))]
+  merged <- do.call("rbind",lapply(names(filt_fgsea), function(y){
+        df <- filt_fgsea[[y]]$CHEA$output %>%
+              filter(pval < 0.05) 
+  })) %>%
+    group_by(pathway) %>%
+    summarise(node_value = mean(NES)) %>%
+    dplyr::rename(node = "pathway") %>%
+    mutate(sum_n = 1, 
+           CREB_target = ifelse(node %in% chea_CREB_genes, "yes", "no"),
+           is_tf = "yes",
+           node_type = "TF_module",
+           go_term = "TF",
+           go_ids = "none",
+           network_group = "TF_module") %>%
+           mutate(node_value = ifelse(node_value > 0 , 1, -1)) 
+  return(merged)
+})
+
+
+
+merged_node_table_TF <- sapply(names(TF_ledge), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pop <- paste(x, "cells", sep ="")
+  tf_table <- TF_ledge[[x]] %>%
+              #filter(node_name %in% merged_node_table[[x]]$node)%>%
+              dplyr::select(target, node_name) 
+
+  filt_node_table <- merged_node_table[[pop]] %>%
+                      filter(!node %in% TF_ledge[[x]]$source) %>%
+                      bind_rows(.,TF_node_table[[x]]) %>%
+                      mutate(node_value = as.numeric(signif(node_value, digits = 3))) %>%
+                      left_join(., tf_table, by = c("node" = "node_name")) %>%
+                      rename(node_name = "node") %>%
+                      rename(node = "target") %>%
+                      dplyr::select(node, node_name, everything()) %>%
+                      mutate(node = ifelse(network_group == "CREB_geneset", node_name, 
+                                             ifelse(network_group == "TF_module", node_name, node)))  %>%
+                      mutate(node_name = ifelse(network_group == "CREB_geneset", "CREB1", node_name)) %>%
+                      mutate(CREB_target = ifelse(node_name %in% human_orthologs_symbols$hgnc_symbol,
+                                                  "putative", "none")) %>%
+                      mutate(CREB_target = ifelse(node_name %in% c(transfac_CREB_genes, jasper_CREB_genes,
+                                                                   chea_CREB_genes, encode_CREB_genes),
+                                                  "target", CREB_target)) %>%
+                      filter(sign(node_value) == 1) 
+                      
+  return(filt_node_table)
+})
+
+lapply(names(merged_node_table_TF), function(x){
+  write.table(merged_node_table_TF[[x]], file = file.path(outDir, paste("node_tables_CREB_with_TF_v2_",x, ".csv", sep ="" )), 
+                                      quote = FALSE, row.names = FALSE, sep = "!")
+  
+})
+
+
+
+
+
+
+network_tables_TF_filt <- sapply(names(network_tables_TF), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  df <- network_tables_TF[[x]] %>%
+        filter(source %in% merged_node_table_TF[[x]]$node | target %in% merged_node_table_TF[[x]]$node ) %>%
+        filter(!node_name %in% merged_node_table_TF[[x]][merged_node_table_TF[[x]]$node_value == -1,]$node) %>%
+        filter(annotation != "regression_module") %>%
+        mutate(combo = paste(source, target, sep = "!")) %>%
+        group_by(combo) %>%
+        mutate(top = ifelse(max(edge_value) == edge_value, "yes", "no")) %>%
+        ungroup(.) %>%
+        filter(top == "yes") %>%
+        dplyr::select(-combo,-top)
+  return(df)
+
+})
+
+lapply(names(network_tables_TF_filt), function(x){
+  write.csv(network_tables_TF_filt[[x]], file = file.path(outDir, paste("network_tables_CREB_with_TF_filt",x, ".csv" , sep = "")), 
+                                      quote = FALSE, row.names = FALSE)
+  
+})
+
+
+
+node_tables_TF_filt <- sapply(names(merged_node_table_TF), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  df <- merged_node_table_TF[[x]] %>%
+        filter(node %in% c(network_tables_TF_filt[[x]]$source, network_tables_TF_filt[[x]]$target)) %>%
+        mutate(node = factor(node)) #%>%
+        #mutate(node_color = )
+  return(df)
+
+})
+
+lapply(names(node_tables_TF_filt), function(x){
+  write.table(node_tables_TF_filt[[x]], file = file.path(outDir, paste("node_tables_CREB_with_TF_filt",x, ".csv" , sep = "")), 
+                                      quote = FALSE, row.names = FALSE, sep = "!")
+  
+})
+
+
+selected_tf_nodes <- sapply(names(node_tables_TF_filt), simplify = F, USE.NAMES = T, function(x){
+    tfs <- node_tables_TF_filt[[x]] %>%
+            dplyr::filter(node_type == "TF_module") 
+    return(tfs)
+})
+
+WriteXLS::WriteXLS(selected_tf_nodes,  "output/data/selected_TF_nodes_network.xlsx")
+
+```
+
+```{r CREB_corr_cytok_gene}
+CREB_CHEA <- chea[names(chea) == "CREB1"]
+
+pop_iter <- as.vector(outer( c("DCcells", "Tcells", "Bcells"), c("_wk0", "_wk2", "_wk25"), FUN = "paste0"))
+
+CREB_gsva <- sapply(pop_iter, simplify = FALSE, USE.NAMES = TRUE ,function(x){
+  
+  #pop <- paste(x,"cells", sep  ="")
+  filt_fgsea <- fgsea_intersect[grepl(paste(x, "_", sep = ""), names(fgsea_intersect))]
+  LE <- lapply(names(filt_fgsea), function(y){
+      df <- filt_fgsea[[y]]$CHEA$output %>%
+            filter(pathway == "CREB1") %>%
+            unnest(.) %>%
+            .$leadingEdge
+  })
+  LE <- unique(unlist(LE))
+  
+  exprs <- as.data.frame(exprs(eset)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            inner_join(., as.data.frame(fData(esetBaselined)) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+            filter(SYMBOL %in% LE) %>%
+            gather(sample, value, sampleNames(esetBaselined)) %>%
+            group_by(sample, SYMBOL) %>%
+            mutate(mean = mean(value)) %>%
+            ungroup(.) %>%
+            dplyr::select(SYMBOL, sample, mean) %>%
+            unique(.) %>%
+            spread(sample, mean) %>%
+            #dplyr::select(SYMBOL, colnames(exprs(esetBaselined))) %>%
+            column_to_rownames("SYMBOL") %>%
+            as.matrix(.)
+  #return(exprs)
+  gsva_out <- gsva(exprs, CREB_CHEA, method = "zscore" )
+  gsva_out <- gsva_out[,order(gsva_out[1,]), drop = FALSE]
+  return(gsva_out)
+})
+
+
+immport_cytok_chemo <- read_excel(path = "input/IMMPORT_annotations.xls") %>%
+                            filter(Category %in% c("Chemokines", "Chemokine_Receptors", 
+                                                   "Cytokines", "Cytokine_Receptors" )) %>%
+                            .$Symbol %>%
+                            unique(.)
+
+immport_all <- read_excel(path = "input/IMMPORT_annotations.xls")
+
+
+cytok_CREB_corr <- sapply(names(CREB_gsva), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  gsva_prep <- CREB_gsva[[x]] %>%
+                as.data.frame(.) %>%
+                rownames_to_column("module") %>%
+                gather(Sample.ID, zscore, -module)
+  fits <- split_fits_titers[grepl(x,names(split_fits_titers))] 
+  deg_fits <- lapply(names(fits[[x]]), function(y){
+      concat <- paste(x, y, sep = "__")
+      degs <- fits[[x]][[y]]$topTable[[concat]] %>%
+          filter(P.Value < 0.05) %>%
+          filter(logFC > 0) %>%
+          .$BROAD.Gene.Symbol
+      return(degs)
+  })
+  #return(deg_fits)
+                            
+  corr <- as.data.frame(exprs(esetBaselined)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            gather(Sample.ID, value, -Illmn.ID) %>%
+            inner_join(., pData(esetBaselined) %>% rownames_to_column("Sample.ID"), by ="Sample.ID") %>%
+            filter(grepl(x, MonkeyNumberCellTypeTimePoint)) %>%
+            inner_join(., fData(esetBaselined) %>% rownames_to_column("Illmn.ID"), by ="Illmn.ID") %>%
+            filter(BROAD.Gene.Symbol %in% immport_cytok_chemo) %>%
+            filter(BROAD.Gene.Symbol %in% unlist(deg_fits)) %>%
+            group_by(BROAD.Gene.Symbol, Sample.ID) %>%
+            mutate(mean = mean(value, na.rm = T)) %>%
+            ungroup(.) %>%
+            dplyr::select(Sample.ID, BROAD.Gene.Symbol, mean) %>%
+            unique(.) %>%
+            spread(BROAD.Gene.Symbol, mean) %>%
+            inner_join(., gsva_prep, by = "Sample.ID") %>%
+            gather(SYMBOL, value, -module, -Sample.ID, -zscore) %>%
+            group_by(SYMBOL) %>%
+            do(model = cor.test(.$value, .$zscore, method = "spearman")) %>%
+            tidy(., model) %>%
+            ungroup(.) %>%
+            mutate(padj = p.adjust(p.value, method = "BH")) #%>%
+            #filter(p.value < 0.05)
+            
+            
+  return(corr)
+})
+
+immune_CREB_corr <- sapply(names(CREB_gsva), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  gsva_prep <- CREB_gsva[[x]] %>%
+                as.data.frame(.) %>%
+                rownames_to_column("module") %>%
+                gather(Sample.ID, zscore, -module)
+  corr <- as.data.frame(exprs(esetBaselined)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            gather(Sample.ID, value, -Illmn.ID) %>%
+            inner_join(., pData(esetBaselined) %>% rownames_to_column("Sample.ID"), by ="Sample.ID") %>%
+            filter(grepl(x, MonkeyNumberCellTypeTimePoint)) %>%
+            inner_join(., fData(esetBaselined) %>% rownames_to_column("Illmn.ID"), by ="Illmn.ID") %>%
+            filter(BROAD.Gene.Symbol %in% immport_all$Symbol) %>%
+            group_by(BROAD.Gene.Symbol, Sample.ID) %>%
+            mutate(mean = mean(value, na.rm = T)) %>%
+            ungroup(.) %>%
+            dplyr::select(Sample.ID, BROAD.Gene.Symbol, mean) %>%
+            unique(.) %>%
+            spread(BROAD.Gene.Symbol, mean) %>%
+            inner_join(., gsva_prep, by = "Sample.ID") %>%
+            gather(SYMBOL, value, -module, -Sample.ID, -zscore) %>%
+            group_by(SYMBOL) %>%
+            do(model = cor.test(.$value, .$zscore, method = "spearman")) %>%
+            tidy(., model) %>%
+            ungroup(.) %>%
+            mutate(padj = p.adjust(p.value, method = "BH")) %>%
+            #filter(p.value < 0.05) %>%
+            #filter(sign(estimate) == 1)
+            
+            
+  return(corr)
+})
+
+immport_gene_annotations <- read_excel(path = "input/IMMPORT_annotations.xls") %>%
+                            filter(Category %in% c("Chemokines", "Chemokine_Receptors", 
+                                                   "Cytokines", "Cytokine_Receptors" )) %>%
+                            dplyr::select(Symbol, Name, Synonyms, Category) %>%
+                            unique(.)
+
+concat_creb_corr_cytok <- sapply(names(cytok_CREB_corr), USE.NAMES = T, simplify = F, function(x){
+  df <- cytok_CREB_corr[[x]] %>%
+    mutate(condition = x) %>%
+    #inner_join(., immport_gene_annotations, by = c("SYMBOL" = "Symbol")) %>%
+    #dplyr::select(-Category) %>%
+    unique(.) %>%
+    mutate(logp = -log(p.value, base = 10)) %>%
+    #mutate(color = "black") %>%
+    mutate(color = ifelse(p.value < 0.05 & estimate > 0, "red", 
+                          ifelse(p.value < 0.05 & estimate < 0, "blue", "black")))
+  
+})
+
+
+export_concat_creb_cytok <- do.call("rbind", lapply(names(concat_creb_corr_cytok), function(x){
+  df <- concat_creb_corr_cytok[[x]] %>%
+          rename(rho = "estimate") %>%
+          dplyr::select(condition, SYMBOL, rho, p.value, padj)
+  return(df)
+}))
+
+write.csv(export_concat_creb_cytok, file = file.path(dataOutDir, "cytok_chemo_genes_vs_CREB.csv"))
+
+volc_plots_CREB_cytok <- sapply(names(concat_creb_corr_cytok), simplify = F, USE.NAMES = T, function(x){
+    sig_highlight <- concat_creb_corr_cytok[[x]] %>%
+                    filter(color != "black") %>%
+                    filter(color == "red")
+                    
+    p <- ggplot(concat_creb_corr_cytok[[x]], aes(x = estimate, y = logp, color = color)) +
+        geom_point() +
+        geom_hline(yintercept = -log(0.05, base = 10), linetype = "dashed") + 
+        scale_x_continuous(name = "Spearman rho", breaks = seq(-1,1, by = 0.2), limits = c(-1,1)) + 
+        scale_color_manual(values = c(black = "black", red= "red", blue = "blue")) +
+        theme_bw() +
+        geom_label_repel(data = sig_highlight, aes(color = color, label = SYMBOL)) + 
+        ylab("log10 p-value") + 
+        ggtitle(x)
+    return(p)
+})
+
+pdf(file.path(figureDir,"CREB_cytok_chemo.pdf"))
+volc_plots_CREB_cytok
+dev.off()
+
+
+
+
+concat_creb_corr_immune <- do.call("rbind", lapply(names(immune_CREB_corr), function(x){
+  df <- cytok_degs_corr[[x]] %>%
+    mutate(condition = x) %>%
+    inner_join(., immport_all, by = c("SYMBOL" = "Symbol"))
+  
+  return(df)
+}))
+
+write.csv(concat_creb_corr_immune, file = file.path(dataOutDir, "CREB_corr_immune_genes.csv"))
+
+wk25_concat_creb_corr <- do.call("rbind", immune_CREB_corr[grepl("wk25", names(immune_CREB_corr))]) %>%
+                          inner_join(., immport_all, by = c("SYMBOL" = "Symbol"))
+
+write.csv(wk25_concat_creb_corr, file = file.path(dataOutDir, "CREB_corr_immune_genes_wk25.csv"))
+
+cytok_degs <- list()
+for(i in names(split_fits_titers)){
+  for(j in split_fits_titers[[i]]){
+    concat <- paste(i, j, sep = "__")
+    cytok_degs[[concat]] <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+            filter(P.Value < 0.05) %>%
+            filter(BROAD.Gene.Symbol %in% immport_cytok_chemo)
+  }
+}
+
+
+
+cytok_degs_postvaxx <- do.call("rbind", sapply(pop_iter_G1G2, simplify = F, USE.NAMES = T, function(x){
+  temp_pop <- gsub("_wk.*", "", x)
+  
+  #concat <- paste(i, j, sep = "__")
+  out <- split_fits[[temp_pop]]$topTable[[x]] %>%
+          #filter(P.Value < 0.05) %>%
+          filter(BROAD.Gene.Symbol %in% immport_cytok_chemo) %>%
+          mutate(contrast = paste(x, "_vs_prevaxx", sep= "")) %>%
+          group_by(BROAD.Gene.Symbol) %>%
+          mutate(canon = ifelse(AveExpr == max(AveExpr), 1, 0)) %>%
+          ungroup(.) %>%
+          filter(canon == 1) %>%
+          dplyr::select(-canon, -ProbeID) 
+  return(out)
+
+})) %>% remove_rownames() 
+
+#write.csv(cytok_degs_postvaxx, file = file.path(dataOutDir, "cyto_chemok_vs_prevaxx.csv"))
+
+write.csv(cytok_degs_postvaxx, file = file.path(dataOutDir, "cyto_chemok_vs_prevaxx2.csv"))
+
+selec_degs <- do.call("rbind", sapply(names(cytok_degs), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  filt <- cytok_degs[[x]] %>%
+            filter(grepl("CCL11|CCL24|CCL26|CXC3", BROAD.Gene.Symbol) %>%
+            mutate(condition = x)
+  return(filt)
+}))
+
+
+
+
+
+concat_degs_cytok[grepl("CCL11|CCL24|CCL26|CXC3", concat_degs_cytok$Synonyms),]
+immport_gene_annotations[grepl("CX3C", immport_gene_annotations$Symbol),]
+```
+
+```{r cytokines vs V1V2}
+pop_iter_titers <- as.vector(outer( pop_iter,  c("__V1V2_IgG_W14", "__V1V2_IgG_W25","__V1V2_IgG_W53","__V1V2_IgG_W55"),  
+                                                 FUN = "paste0"))
+
+pop_iter_G1G2 <- as.vector(outer( c("G1_", "G2_"), pop_iter, FUN = "paste0"))
+
+
+select_IDs_nonBL <- do.call("rbind", lapply(pop_iter_G1G2, function(x){
+    condition <- gsub("G._", "", x)
+    groupCell <- gsub("_wk.*", "", x)
+    
+    df <- split_fits[[groupCell]]$topTable[[x]] %>%
+          mutate(condition = condition,
+                 groupCell = groupCell,
+                 contrast = x) 
+    return(df)
+}))
+
+selected_ProbeID <-   select_IDs_nonBL %>%
+                        group_by(ProbeID, condition) %>%
+                        mutate(aveGroup = mean(AveExpr)) %>%
+                        ungroup(.) %>%
+                        group_by(BROAD.Gene.Symbol, condition) %>%
+                        mutate(top = ifelse(aveGroup == max(aveGroup), "yes", "no")) %>%
+                        ungroup(.) %>%
+                        filter(top == "yes") %>%
+                        split(., f = .$condition)
+                        
+
+cytok_chemo_vs_titers <- do.call("rbind", lapply(pop_iter_titers, function(x){
+    contrast <- gsub("__.*", "", x)
+    outcome <- gsub(".*__","", x)
+    pop <- gsub("cells.*", "cells", contrast)
+    
+    titer_topTable <- split_fits_titers[[contrast]][[outcome]]$topTable[[x]] %>%
+                        filter(ProbeID %in% selected_ProbeID[[contrast]]$ProbeID) %>%
+                        mutate(contrast = x) %>%
+                        filter(SYMBOL %in% immport_cytok_chemo) %>%
+                        dplyr::select(-ProbeID, -AveExpr, -BROAD.Gene.Symbol)
+
+    return(titer_topTable)
+}))
+
+P2yR_titers <- do.call("rbind", lapply(pop_iter_titers, function(x){
+    contrast <- gsub("__.*", "", x)
+    outcome <- gsub(".*__","", x)
+    pop <- gsub("cells.*", "cells", contrast)
+    
+    titer_topTable <- split_fits_titers[[contrast]][[outcome]]$topTable[[x]] %>%
+                        filter(ProbeID %in% selected_ProbeID[[contrast]]$ProbeID) %>%
+                        mutate(contrast = x) %>%
+                        filter(BROAD.Gene.Symbol %in% c("P2RY1", "P2RY2", "P2RY4", "P2RY6", "P2RY11", 
+                                                        "P2YRY12", "P2RY13", "P2RY14") ) %>%
+                        dplyr::select(-ProbeID, -AveExpr, -BROAD.Gene.Symbol)
+
+    return(titer_topTable)
+}))
+
+P2yR_POSTVAXX <- do.call("rbind", lapply(names(selected_ProbeID), function(x){
+    
+    topTable <- selected_ProbeID[[x]] %>%
+                        filter(BROAD.Gene.Symbol %in% c("P2RY1", "P2RY2", "P2RY4", "P2RY6", "P2RY11", 
+                                                        "P2YRY12", "P2RY13", "P2RY14") ) %>%
+                        dplyr::select(-ProbeID, -AveExpr, -BROAD.Gene.Symbol, -groupCell, -top, -condition  ) %>%
+                        mutate(sigExpr = ifelse(logFC > log(1.10, base = 2) & P.Value < 0.05, "SIG_UP", "NS"))# %>%
+                        #filter(sigExpr == "SIG_UP")
+
+    return(topTable)
+}))
+
+write.csv(P2yR_titers, file = file.path(dataOutDir, "P2YR_vs_titers.csv"))
+
+write.csv(P2yR_POSTVAXX, file = file.path(dataOutDir, "P2YR_postvaxx.csv"))
+
+```
+
+
+
+```{r MSD correlation to GPCR}
+
+MSD_values_wk0 <- read_excel(path = "../manuscript/Study 36 MesoScale table for clustering-2.xlsx") %>%
+              dplyr::select(-c(4:11)) %>%
+              mutate(Animal = gsub("-", "_", Animal)) %>%
+              mutate(Animal = paste("M", Animal, sep ="")) %>%
+              gather(Assay, value, -Animal, -Group, -Timepoint) %>%
+              group_by(Assay, Animal, Timepoint) %>%
+              mutate(mean = mean(value, na.rm = T)) %>%
+              ungroup(.) %>%
+              dplyr::select(Animal, Timepoint, Group, Assay, mean) %>%
+              unique(.) %>%
+              spread(Assay, mean) %>%
+              filter(Timepoint == 0) %>%
+              rename(MSD_Timepoint = "Timepoint")
+
+
+c2_gmt <- getGmt(geneset_list$c2)
+c5_gmt <- getGmt(geneset_list$c5)
+c2c5 <- GeneSetCollection(c(c2_gmt, c5_gmt))
+
+fgsea_GPCR <- do.call("rbind", sapply(names(fgsea_analysis2), simplify = F, USE.NAMES = T, function(x){
+  contrast <- str_split(x, pattern = "_vs_")[[1]][1]
+  G_pop <- gsub("_wk.*", "", contrast)
+  timepoint <- gsub(".*wk", "wk", contrast)
+  
+  fgsea <- rbind(fgsea_analysis2[[x]]$c2$output, fgsea_analysis2[[x]]$c5$output ) %>%
+          filter(grepl("GPCR", pathway)) %>%
+          filter(pval < 0.05) %>%
+          unnest(leadingEdge) %>%
+          mutate(contrast = contrast,
+                 G_pop = G_pop,
+                 timepoint = timepoint,
+                 pop = gsub("G._", "", G_pop)) %>%
+          mutate(conditiontime = paste(pop, timepoint, sep = "_")) %>%
+          mutate(combo = paste(conditiontime, pathway, sep = "__"))
+          
+  return(fgsea)
+}))
+
+fgsea_consolidated_GPCR_pathways <- fgsea_GPCR %>%
+                          dplyr::select(pathway, NES, G_pop, conditiontime, combo ) %>%
+                          unique(.) %>%
+                          arrange(conditiontime, pathway) %>%
+                          group_by(conditiontime, pathway) %>%
+                          mutate(countpos = sum(NES > 0)) %>%
+                          filter(countpos == 2)
+
+fgsea_consolidated_GPCR <- fgsea_GPCR %>%
+                            filter(combo %in% fgsea_consolidated_GPCR_pathways$combo) %>%
+                            split(., f = .$conditiontime)
+
+fgsea_consolidated_GPCR <- fgsea_consolidated_GPCR[!grepl("NK",names(fgsea_consolidated_GPCR))]
+
+gsva_GPCR <- sapply(names(fgsea_consolidated_GPCR), simplify = F, USE.NAMES = T, function(x){
+  contrast <- x
+  pop <- gsub("_wk.*", "", contrast)
+  timepoint <- gsub(".*wk", "wk", contrast)
+  G_pop <- 
+  sampleIDs <- as.data.frame(pData(esetBaselined)) %>% 
+                filter(CellType == pop & TimePoint == timepoint ) %>%
+                .$SampleID
+  filt_eset <- esetBaselined[,sampleIDs]
+  G1 <- split_fits[[paste("G1", pop, sep = "_")]]$topTable[[paste("G1", contrast, sep = "_")]] %>% mutate(condition = "G1")
+  G2 <- split_fits[[paste("G2", pop, sep = "_")]]$topTable[[paste("G2", contrast, sep = "_")]] %>% mutate(condition = "G2")
+  topID <- rbind(G1, G2) %>%
+              group_by(BROAD.Gene.Symbol) %>%
+              mutate(topID = ifelse(AveExpr == max(AveExpr), 1, 0)) %>%
+              ungroup() %>%
+              filter(topID == 1) %>%
+              .$ProbeID
+  
+  expr_mat <- as.data.frame(exprs(filt_eset)) %>%
+                rownames_to_column("ProbeID") %>%
+                filter(ProbeID %in% topID) %>%
+                inner_join(., fData(filt_eset), by = "ProbeID") %>%
+                dplyr::select(c(sampleIDs,"BROAD.Gene.Symbol")) %>%
+                gather(SampleID, value, -BROAD.Gene.Symbol) %>%
+                inner_join(., pData(filt_eset), by = "SampleID") %>%
+                dplyr::select(MonkeyNumber, value, BROAD.Gene.Symbol) %>%
+                spread(MonkeyNumber, value) %>%
+                column_to_rownames("BROAD.Gene.Symbol") %>%
+                as.matrix(.)
+
+  gsva_out <- do.call("rbind", sapply((unique(fgsea_consolidated_GPCR[[x]]$pathway)), simplify = F, USE.NAMES = T, function(y){
+    geneset <- c2c5[names(c2c5) == y]
+    fgsea <- fgsea_consolidated_GPCR[[x]] %>%
+              filter(pathway == y)
+    filt_expr <- expr_mat[row.names(expr_mat) %in% fgsea$leadingEdge ,]
+    gsva <- gsva(expr = filt_expr, gset.idx.list = geneset, method= "zscore") %>%
+            as.data.frame(.) %>%
+            rownames_to_column("pathway") %>%
+            gather(sampleID, zscore, -pathway) 
+    return(gsva)              
+  })) 
+  
+  if(!is.null(gsva_out)){
+    gsva_out <- gsva_out %>%
+                remove_rownames() %>%
+                spread(pathway,zscore)
+  }
+    
+  
+  return(gsva_out)
+  
+})
+   
+
+
+GPCR_MSD_corr <- do.call("rbind", sapply(names(gsva_GPCR), simplify = F, USE.NAMES = T, function(x){
+    df <- gsva_GPCR[[x]] %>%
+          inner_join(., MSD_values_wk0, by = c("sampleID" = "Animal")) %>%
+          gather(pathway, zscore, colnames(gsva_GPCR[[x]])[2:length(colnames(gsva_GPCR[[x]]))]) %>%
+          gather(analyte_wk0, Concentration, colnames(MSD_values_wk0)[c(4:25)]) %>%
+          group_by(pathway, analyte_wk0) %>%
+          do(model = cor.test(.$Concentration , .$zscore, method = "spearman")) %>%
+          tidy(., model) %>%
+          mutate(padj = p.adjust(p.value),
+                 condition_RNA = x) %>%
+          ungroup() %>%
+          rename(rho = "estimate") %>%
+          dplyr::select(-statistic)
+    return(df)        
+})) %>%
+  filter(!grepl("wk25",condition_RNA)) 
+
+write.csv(GPCR_MSD_corr, "output/GPCR_to_MSD_correlations.csv")
+
+
+GPCR_CHEMOK_gsva_c5 <- sapply(pop_iter, simplify = FALSE, USE.NAMES = TRUE ,function(x){
+  
+  #pop <- paste(x,"cells", sep  ="")
+  filt_fgsea <- fgsea_intersect[grepl(paste(x, "_", sep = ""), names(fgsea_intersect))]
+  LE <- sapply(names(filt_fgsea), USE.NAMES = T, simplify = F,  function(y){
+      df <- filt_fgsea[[y]]$c5$output %>%
+            filter(grepl(paste(CREB_subset, collapse = "|"), pathway)) %>%
+            unnest(.) #%>%
+            #split(., f = .$pathway)
+           
+  })
+  return(LE)
+
+  LE <- unique(unlist(LE))
+  
+  exprs <- as.data.frame(exprs(eset)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            inner_join(., as.data.frame(fData(esetBaselined)) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+            filter(SYMBOL %in% LE) %>%
+            gather(sample, value, sampleNames(esetBaselined)) %>%
+            group_by(sample, SYMBOL) %>%
+            mutate(mean = mean(value)) %>%
+            ungroup(.) %>%
+            dplyr::select(SYMBOL, sample, mean) %>%
+            unique(.) %>%
+            spread(sample, mean) %>%
+            #dplyr::select(SYMBOL, colnames(exprs(esetBaselined))) %>%
+            column_to_rownames("SYMBOL") %>%
+            as.matrix(.)
+  #return(exprs)
+  
+  c2_filt <- ""
+  
+  
+  gsva_out <- gsva(exprs, CREB_CHEA, method = "zscore" )
+  gsva_out <- gsva_out[,order(gsva_out[1,]), drop = FALSE]
+  return(gsva_out)
+})
+
+
+
+```
+
+```{r MSD correlation}
+
+
+MSD_values_wk4 <- read_excel(path = "../manuscript/Study 36 MesoScale table for clustering-2.xlsx") %>%
+              dplyr::select(-c(4:11)) %>%
+              mutate(Animal = gsub("-", "_", Animal)) %>%
+              mutate(Animal = paste("M", Animal, sep ="")) %>%
+              gather(Assay, value, -Animal, -Group, -Timepoint) %>%
+              group_by(Assay, Animal, Timepoint) %>%
+              mutate(mean = mean(value, na.rm = T)) %>%
+              ungroup(.) %>%
+              dplyr::select(Animal, Timepoint, Group, Assay, mean) %>%
+              unique(.) %>%
+              spread(Assay, mean) %>%
+              filter(Timepoint == 4) %>%
+              rename(MSD_Timepoint = "Timepoint")
+
+MSD_values_wk27 <- read_excel(path = "../manuscript/Study 36 MesoScale table for clustering-2.xlsx") %>%
+              dplyr::select(-c(4:11)) %>%
+              mutate(Animal = gsub("-", "_", Animal)) %>%
+              mutate(Animal = paste("M", Animal, sep ="")) %>%
+              gather(Assay, value, -Animal, -Group, -Timepoint) %>%
+              group_by(Assay, Animal, Timepoint) %>%
+              mutate(mean = mean(value, na.rm = T)) %>%
+              ungroup(.) %>%
+              dplyr::select(Animal, Timepoint, Group, Assay, mean) %>%
+              unique(.) %>%
+              spread(Assay, mean) %>%
+              filter(Timepoint == 27) %>%
+              rename(MSD_Timepoint = "Timepoint")
+
+
+MSD_corr_wk2 <- sapply(names(wk2_CREB_gsva), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  merged <- as.data.frame(wk2_CREB_gsva[[x]]) %>% rownames_to_column("module") %>%
+            gather(sample, zscore, -module) %>%
+            inner_join(., pData(esetBaselined) %>% rownames_to_column("sample"), by ="sample") %>%
+            dplyr::select(module, sample, zscore, MonkeyNumber) %>%
+            inner_join(., MSD_values_wk4, by = c("MonkeyNumber" = "Animal")) %>%
+            gather(Assay, Concentration, colnames(MSD_values_wk4)[c(4:dim(MSD_values_wk4)[2])]) %>%
+            group_by(Assay) %>%
+            do(model = cor.test(.$Concentration, .$zscore, method = "spearman")) %>%
+            tidy(., model) %>%
+            ungroup(.) %>%
+            mutate(padj = p.adjust(p.value, method = "BH")) %>%
+            filter(p.value < 0.05)
+  return(merged)
+})
+
+
+MSD_corr_wk25 <- sapply(names(wk25_CREB_gsva), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  merged <- as.data.frame(wk25_CREB_gsva[[x]]) %>% 
+            rownames_to_column("module") %>%
+            gather(sample, zscore, -module) %>%
+            inner_join(., pData(esetBaselined) %>% rownames_to_column("sample"), by ="sample") %>%
+            dplyr::select(module, sample, zscore, MonkeyNumber) %>%
+            inner_join(., MSD_values_wk27, by = c("MonkeyNumber" = "Animal")) %>%
+            gather(Assay, Concentration, colnames(MSD_values_wk27)[c(4:dim(MSD_values_wk27)[2])]) %>%
+            group_by(Assay) %>%
+            do(model = cor.test(.$Concentration, .$zscore, method = "spearman")) %>%
+            tidy(., model) %>%
+            ungroup(.) %>%
+            mutate(padj = p.adjust(p.value, method = "BH")) %>%
+            filter(p.value < 0.05)
+  return(merged)
+})
+
+
+
+
+```
+
+```{r interferon_vs_titers}
+
+
+
+
+interferon_LEDGE <- fgsea_analysis2$G2_DCcells_wk0_vs_G2_DCcells_pre$interferome$output %>%
+                    filter(pathway == "I") %>%
+                    unnest(.) %>%
+                    .$leadingEdge
+
+IFN_exprs <- as.data.frame(exprs(esetBaselined)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            inner_join(., as.data.frame(fData(esetBaselined)) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+            filter(SYMBOL %in% interferon_LEDGE) %>%
+            gather(sample, value, sampleNames(esetBaselined)) %>%
+            inner_join(., pData(esetBaselined), by = c("sample" = "SampleID")) %>%
+            filter(grepl("DCcells_wk0",MonkeyNumberCellTypeTimePoint) & StudyGroup == "G2") %>%
+            group_by(sample, SYMBOL) %>%
+            mutate(mean = mean(value)) %>%
+            ungroup(.) %>%
+            dplyr::select(SYMBOL, sample, mean) %>%
+            unique(.) %>%
+            spread(sample, mean) %>%
+            column_to_rownames("SYMBOL") %>%
+            as.matrix(.)
+
+
+interferomeGmt <- getGmt(geneset_list$interferome)
+interferomeI <- interferomeGmt[names(interferomeGmt) == "I"]
+
+
+
+gsva_interferonI <- gsva(IFN_exprs, interferomeI, method = "zscore")
+
+interferon_titers_corr <- gsva_interferonI %>%
+                          as.data.frame(.) %>%
+                          gather(SampleID, zscore) %>%
+                          inner_join(., pData(esetBaselined), by = "SampleID") %>%
+                          dplyr::select(MonkeyNumber, zscore) %>%
+                          inner_join(., titers, by = "MonkeyNumber") %>%
+                          gather(outcome, titer, -MonkeyNumber, -zscore, -Animal, -Group) %>%
+                          filter(outcome %in% c("V1V2_IgG_W14", "V1V2_IgG_W25", "V1V2_IgG_W55")) %>%
+                          mutate(titer = log(titer, base = 10)) %>%
+                          group_by(outcome) %>%
+                          mutate(titer = scale(titer)) %>%
+                          ungroup(.)
+
+interferon_titers_corr_stats <- interferon_titers_corr %>%
+                                  group_by(outcome) %>%
+                                  do(model = cor.test(.$zscore, .$titer), method = "spearman") %>%
+                                  tidy(., model)
+
+interferon_titers_corr_stats_export <- interferon_titers_corr_stats %>%
+                                          rename(rho = "estimate") %>%
+                                          dplyr::select(outcome, rho, p.value)
+write.csv(file = file.path(dataOutDir, "interferomeI_Wk0_vs_titers.csv"), interferon_titers_corr_stats_export)                  
+              
+                      
+interferon_titers_corr_plots <- interferon_titers_corr %>%
+                                ggplot(., aes(x = zscore, y = titer)) +
+                                  geom_point() +
+                                  theme_bw() +
+                                  stat_smooth(method="rlm", se=TRUE) + 
+                                  xlab("Day 2-3 SLEA INTERFEROME I (Z-Score)") +
+                                  ylab("Z-Score log10(titers)") + 
+                                  facet_wrap(~outcome)
+
+pdf(file.path(figureDir, "interferomeI_Wk0_vs_titers.pdf"), width = 12, height = 4)
+interferon_titers_corr_plots
+dev.off()
+
+
+test <- sapply(names(fgsea_analysis_titers), USE.NAMES = T, simplify = F, function(x){
+  df <- fgsea_analysis_titers[[x]]$interferome$output
+  return(df)
+  
+})
+
+
+
+```
+
+
+
+```{r TH subsets}
+
+test <- fgsea_analysis2$G2_Tcells_wk0_vs_G2_Tcells_pre$c2$output
+
+
+
+
+```
+
+
+```{r genemania__cytokines_CREB_targets}
+cytok_genemania <- read.table("../Mesoscale/cytokine_genemania_list_jeff.txt") %>%
+                  dplyr::rename(genename = "V1") %>%
+                  mutate(CREB_target = ifelse(genename %in% c(chea_CREB_genes, encode_CREB_genes), "CREB_target", 
+                                              ifelse(genename %in% c(human_orthologs_symbols$hgnc_symbol, 
+                                                                     transfac_CREB_genes, jasper_CREB_genes), "putative",
+                                                                     "no")))
+
+write.table(cytok_genemania, "data/genemania_cytokines_CREB_targets.txt", sep = "\t", quote = F, row.names = F)
+```
+
+
+
+```{r cluego_DC TF_overlap}
+
+extract_function_associated_genes_cluego <- function(cluegoNodeTablePath, genecolumn = "All.Associated.Genes"){
+  df <- read.table(cluegoNodeTablePath, sep = "\t", header = T) %>%
+        dplyr::select(c("GOGroups", genecolumn)) %>%
+        dplyr::rename(Genes = 2) %>%
+        filter(GOGroups != "") %>%
+        mutate(GOGroups = gsub("\\[|\\]", "", GOGroups)) %>%
+        mutate(Genes = gsub("\\[|\\]", "", Genes)) %>%
+        separate_rows(Genes, sep = ", ") %>%
+        unique() 
+  out <- sapply(unique(df$GOGroups), simplify = F, USE.NAMES = T, function(x){
+    geneLS <- df[df$GOGroup == x,]$Genes
+    return(geneLS)
+  })
+  return(out)
+}
+
+
+
+cluego_DC_node <- extract_function_associated_genes_cluego(cluegoNodeTablePath = 
+                                                             "output/data/ClueGOResults5 NodeAttributeTable_UPDC.txt",
+                                                           genecolumn = "Associated.Genes.Found")
+
+cluego_T_node <- extract_function_associated_genes_cluego(cluegoNodeTablePath = 
+                                                             "output/data/ClueGOResults8 NodeAttributeTable_UPT.txt",
+                                                          genecolumn = "Associated.Genes.Found")
+
+cluego_B_node <- extract_function_associated_genes_cluego(cluegoNodeTablePath = 
+                                                             "output/data/ClueGOResults10 NodeAttributeTable_UPB.txt")
+
+
+TF_network_list <- c("YY1", "BMI1", "GATA2", "TAL1", "GATA1", "TET1", "PPARD", "JARID2", "EED", "MTF2", "DNAJC2", "CCND1",
+                     "MEIS1", "MITF", "ESRRB", "MECOM")
+
+
+clueGo_DC_TF <- do.call("rbind", sapply(names(cluego_DC_node), simplify = F, USE.NAMES = T, function(x){
+  geneLS <- cluego_DC_node[[x]]
+  TF_out <- do.call("rbind", sapply(TF_network_list, simplify = F, USE.NAMES = T, function(y){
+   # tf_genes <- geneIds(chea[names(chea) == y])[[y]]
+    filt_fgsea <- fgsea_intersect[grepl("DCcells", names(fgsea_intersect))]
+    tf_genes <- do.call("rbind", lapply(names(filt_fgsea), function(z){
+      out <- filt_fgsea[[z]]$CHEA$output %>% as.data.frame(.) %>% filter(pathway == y)
+      out <-  out %>% unnest(cols = leadingEdge)
+    })) %>% 
+      filter(padj < 0.05 & NES > 0) %>%
+      dplyr::select(pathway, leadingEdge) %>%
+      unique() %>%
+      .$leadingEdge
+    N <- length(unique(split_fits_titers$DCcells_wk0$V1V2_IgG_W14$topTable$DCcells_wk0__V1V2_IgG_W14$BROAD.Gene.Symbol))
+    out <- hypergeom_ORA(genelist = geneLS, geneids = tf_genes, N = N) %>% mutate(TF = y) %>%
+            mutate(leadingEdge_coll = paste(leadingEdge, collapse = ", ")) %>% dplyr::select(-leadingEdge) %>%
+            unique()
+    return(out)
+  })) %>% mutate(GOGroup = x) 
+    
+
+  return(TF_out)
+})) %>% 
+  remove_rownames() %>%
+  filter(leadingEdge_coll != "") %>%
+  mutate(geneCount = str_count(leadingEdge_coll, ", ") + 1) %>%
+  filter(geneCount > 1)  %>%
+   mutate(CREB_target_TF = ifelse(TF %in% c(chea_CREB_genes, encode_CREB_genes) , "target",
+                                                    ifelse(TF %in% c(human_orthologs_symbols$hgnc_symbol,
+                                                                                   transfac_CREB_genes, jasper_CREB_genes),
+                                                           "putative", "no"))) 
+
+
+write_excel_csv(clueGo_DC_TF, path = "output/data/cluego_DC_TF_overlap.csv")
+
+clueGo_T_TF <- do.call("rbind", sapply(names(cluego_T_node), simplify = F, USE.NAMES = T, function(x){
+  geneLS <- cluego_T_node[[x]]
+  TF_out <- do.call("rbind", sapply(TF_network_list, simplify = F, USE.NAMES = T, function(y){
+    #tf_genes <- geneIds(chea[names(chea) == y])[[y]]
+     filt_fgsea <- fgsea_intersect[grepl("Tcells", names(fgsea_intersect))]
+    tf_genes <- do.call("rbind", lapply(names(filt_fgsea), function(z){
+      out <- filt_fgsea[[z]]$CHEA$output %>% as.data.frame(.) %>% filter(pathway == y)
+      out <-  out %>% unnest(cols = leadingEdge)
+    })) %>% 
+      filter(padj < 0.05 & NES > 0) %>%
+      dplyr::select(pathway, leadingEdge) %>%
+      unique() %>%
+      .$leadingEdge
+    N <- length(unique(split_fits_titers$Tcells_wk0$V1V2_IgG_W14$topTable$Tcells_wk0__V1V2_IgG_W14$BROAD.Gene.Symbol))
+    out <- hypergeom_ORA(genelist = geneLS, geneids = tf_genes, N = N) %>% mutate(TF = y) %>%
+            mutate(leadingEdge_coll = paste(leadingEdge, collapse = ", ")) %>% dplyr::select(-leadingEdge) %>%
+            unique()
+    return(out)
+  })) %>% mutate(GOGroup = x)
+
+  return(TF_out)
+})) %>%
+  remove_rownames() %>%
+  filter(leadingEdge_coll != "") %>%
+  mutate(geneCount = str_count(leadingEdge_coll, ", ") + 1) %>%
+  filter(geneCount > 1) %>%
+   mutate(CREB_target_TF = ifelse(TF %in% c(chea_CREB_genes, encode_CREB_genes) , "target",
+                                                    ifelse(TF %in% c(human_orthologs_symbols$hgnc_symbol,
+                                                                                   transfac_CREB_genes, jasper_CREB_genes),
+                                                           "putative", "no"))) 
+
+
+write_excel_csv(clueGo_T_TF, path = "output/data/cluego_T_TF_overlap.csv")
+
+hypergeom_ORA <- function(genelist, geneids, N){
+  intersect <- intersect(genelist, geneids)
+  m <- length(geneids)
+  N <- N
+  n <- N - m
+  k <- length(genelist)
+  x <- length(intersect)
+  if(x > 0 ){
+    p.value <- phyper(q = x - 1 , m = m, n = n, k = k, lower.tail = F)
+    out <- data.frame("p.value" = p.value, "leadingEdge" = intersect)
+  } else { 
+    out <- data.frame("p.value" = 1, "leadingEdge" = "")
+   
+    }
+  
+  return(out)
+}
+
+cluegoDC_CREB_targets <- clueGo_DC_TF %>%
+                        separate_rows(leadingEdge_coll, sep = ", ") %>%
+                        mutate(CREB_target = ifelse(leadingEdge_coll %in% c(chea_CREB_genes, encode_CREB_genes) , "target",
+                                                    ifelse(leadingEdge_coll %in% c(human_orthologs_symbols$hgnc_symbol,
+                                                                                   transfac_CREB_genes, jasper_CREB_genes),
+                                                           "putative", "no"))) %>%
+                        dplyr::select(leadingEdge_coll, CREB_target) %>%
+                        unique()
+
+write_excel_csv(cluegoDC_CREB_targets, path = "output/data/cluego_DC_TF_CREB_targets.csv")
+
+cluegoT_CREB_targets <- clueGo_T_TF %>%
+                        separate_rows(leadingEdge_coll, sep = ", ") %>%
+                         mutate(CREB_target = ifelse(leadingEdge_coll %in% c(chea_CREB_genes, encode_CREB_genes) , "target",
+                                                    ifelse(leadingEdge_coll %in% c(human_orthologs_symbols$hgnc_symbol,
+                                                                                   transfac_CREB_genes, jasper_CREB_genes),
+                                                           "putative", "no"))) %>%
+                        dplyr::select(leadingEdge_coll, CREB_target) %>%
+                        unique()
+
+write_excel_csv(cluegoT_CREB_targets, path = "output/data/cluego_T_TF_CREB_targets.csv")
+
+```
+
+
+```{r gpcr_cytok}
+
+
+
+gpcr_chemok_fgsea_merge <- sapply(names(fgsea_analysis2), simplify = F, USE.NAMES = T, function(x) {
+  comb_GPCR <- do.call("rbind", lapply(c("c5", "c2"), function(y){
+    df <- fgsea_analysis2[[x]][[y]]$output %>%
+            as.data.frame() %>%
+            filter(pval < 0.05) %>%
+            filter(NES > 0) %>%
+            filter(grepl("GPCR|MIGRATION|CHEMOTAXIS|CHEMOKINE",pathway)) %>%
+            unnest(cols = "leadingEdge") %>%
+            dplyr::rename(leadingEdge_sep = "leadingEdge") %>%
+            group_by(pathway) %>%
+            mutate(leadingEdge = paste(leadingEdge_sep, collapse = ", ")) %>%
+            ungroup(.) %>%
+            dplyr::select(-leadingEdge_sep) %>%
+            unique(.) %>%
+            mutate(coll = y)
+    return(df)
+  }))
+  return(comb_GPCR)
+})
+
+gpcr_chemok_fgsea_merge <- gpcr_chemok_fgsea_merge[!grepl("NK", names(gpcr_chemok_fgsea_merge))]
+#gpcr_chemok_fgsea_merge <- gpcr_chemok_fgsea_merge[names(gpcr_chemok_fgsea_merge) == "G1_Bcells_wk0_vs_G1_Bcells_pre"]
+
+
+GPCR_gsva <- sapply(names(gpcr_chemok_fgsea_merge), simplify = FALSE, USE.NAMES = TRUE , function(x){
+  fgsea_filt <- gpcr_chemok_fgsea_merge[[x]]
+  #pop <- paste(x,"cells", sep  ="")
+
+                  
+  zscore_gsva <- do.call("rbind", lapply(fgsea_filt$pathway, function(y){
+     LE <- fgsea_filt %>% as.data.frame() %>% filter(pathway == y) %>%
+            separate_rows(leadingEdge, sep = ", ") %>%
+            .$leadingEdge %>%
+            unique()
+     exprs <- as.data.frame(exprs(eset)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            inner_join(., as.data.frame(fData(esetBaselined)) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>% 
+            filter(SYMBOL %in% LE) %>%
+            gather(sample, value, sampleNames(esetBaselined)) %>%
+            #filter(sample %in% pData_filt$SampleID) %>%
+            group_by(sample, SYMBOL) %>%
+            mutate(mean = mean(value)) %>%
+            ungroup(.) %>%
+            dplyr::select(SYMBOL, sample, mean) %>%
+            unique(.) %>%
+            spread(sample, mean) %>%
+            column_to_rownames("SYMBOL") %>%
+            as.matrix(.)
+
+    gs_filt <- c2c5[names(c2c5) == y]
+    gsva_out <- gsva(exprs, gs_filt, method = "zscore" ) %>%
+                  as.data.frame() %>%
+                  rownames_to_column("pathway") %>%
+                  gather(sample, zscore, -pathway)
+    return(gsva_out)
+  })) %>%
+    spread(pathway, zscore)
+  
+  return(zscore_gsva)
+})
+
+chemok_corr <- do.call("rbind", sapply(names(GPCR_gsva), simplify = F, USE.NAMES = T, function(x){
+    
+    contrast <- gsub("_vs.*", "", x )
+    Group <- str_extract_all("G[12]", string = contrast)[[1]]
+    TimePoint <- str_extract_all("wk[0-9]+", string = contrast)[[1]]
+    pData_filt <- pData(eset) %>%
+                  as.data.frame() %>%
+                  mutate(GroupCellTime = paste(StudyGroupCellType, TimePoint, sep = "_")) 
+    
+    exprs <- as.data.frame(exprs(eset)) %>%
+            rownames_to_column("Illmn.ID") %>%
+            inner_join(., as.data.frame(fData(esetBaselined)) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+            filter(SYMBOL %in% cytok_genemania$genename) %>%
+            gather(sampleFile, value, sampleNames(esetBaselined)) %>%
+            inner_join(., pData_filt, by = c("sampleFile" = "SampleID")) %>%
+            filter(GroupCellTime == contrast) %>%
+            group_by(sampleFile, SYMBOL) %>%
+            mutate(mean = mean(value)) %>%
+            ungroup(.) %>%
+            dplyr::select(SYMBOL, MonkeyNumber, mean) %>%
+            unique(.) %>%
+            spread(SYMBOL, mean)
+
+    namesFilter <- paste(Group, "_.*_", TimePoint, sep = "")
+    #corr_iter <- gsub("_vs.*", "", names(GPCR_gsva))
+    corr_iter <- names(GPCR_gsva)[grepl(namesFilter, names(GPCR_gsva))]
+    corr <- do.call("rbind", sapply(corr_iter, simplify = F, USE.NAMES = T,  function(y){
+        contrastPath <- gsub("_vs.*", "", y )
+      
+        zscore_df <- GPCR_gsva[[y]] %>%
+                  gather(pathway, zscore, -sample) %>%
+                  inner_join(., pData_filt, by  = c("sample" = "SampleID")) %>%
+                  filter(GroupCellTime == contrastPath) %>%
+                  dplyr::select(MonkeyNumber, pathway, zscore) %>%
+                  spread(pathway, zscore)
+      
+        df <- exprs %>%
+                inner_join(., zscore_df, by = "MonkeyNumber") %>%
+                gather(chemokine, chemokine_expression, colnames(exprs)[c(2:length(colnames(exprs)))]) %>%
+                gather(pathway, zscore, colnames(zscore_df)[c(2:length(colnames(zscore_df)))]) %>%
+                group_by(chemokine, pathway) %>%
+                do(model = cor.test(.$chemokine_expression , .$zscore, method = "spearman")) %>%
+                tidy(., model) %>%
+                #filter(p.value < 0.05) %>%
+                filter(estimate > 0) %>%
+                mutate(chemokine_condition = contrast,
+                       pathway_condition = contrastPath) %>%
+                mutate(same_condition = ifelse(chemokine_condition == pathway_condition, "yes", "no"))
+      return(df)
+    }))
+    
+    return(corr)
+}))
+
+
+##supplementary table 6
+chemok_corr_summary <- chemok_corr %>%
+                        filter(p.value < 0.05) %>%
+                        ungroup(.) %>%
+                        mutate(chemo_vs_pathway_constrast = paste(chemokine_condition, " (chemokine) vs ", pathway_condition, 
+                                                                  " (pathway)",sep = "")) %>%
+                        dplyr::select(-pathway, -estimate, -statistic, -p.value) %>%
+                        unique() %>%
+                        group_by(chemo_vs_pathway_constrast) %>%
+                        mutate(sig_chemokines = paste(chemokine, collapse = ", ")) %>%
+                        mutate(n_sig_chemokines = n_distinct(chemokine)) %>%
+                        ungroup() %>%
+                        dplyr::select(-chemokine) %>%
+                        unique() %>%
+                        dplyr::select(chemo_vs_pathway_constrast, chemokine_condition, pathway_condition, same_condition,
+                                      sig_chemokines, n_sig_chemokines)
+  
+
+chemok_corr_summary_perchem <- chemok_corr %>%
+                        filter(p.value < 0.05) %>%
+                        ungroup(.) %>%
+                        mutate(chemo_vs_pathway_constrast = paste(chemokine_condition, " (chemokine) vs ", pathway_condition, 
+                                                                  " (pathway)",sep = "")) %>%
+                        dplyr::select(-estimate, -statistic, -p.value) %>%
+                        unique() %>%
+                        group_by(chemo_vs_pathway_constrast, chemokine) %>%
+                        mutate(sig_pathway = paste(pathway, collapse = ", ")) %>%
+                        mutate(n_sig_pathway = n_distinct(pathway)) %>%
+                        ungroup() %>%
+                        dplyr::select(-pathway) %>%
+                        unique() %>%
+                        dplyr::select(chemokine, chemo_vs_pathway_constrast, chemokine_condition, pathway_condition,
+                                      same_condition,sig_pathway, n_sig_pathway)
+
+write.csv(chemok_corr, "output/data/chemokine_to_GPCRpathway_corr.csv")
+
+write.csv(chemok_corr_summary, "output/data/chemokine_to_GPCRpathway_corr_SigSummary.csv")
+
+write.csv(chemok_corr_summary_perchem, "output/data/chemokine_to_GPCRpathway_corr_SigSummary_per_chemokine.csv")
+
+
+```
+
+
+
+```{r creb1_ledge_chip}
+
+
+rv144_creb1_comb_ledge <- read.table("rv144/output/data/rv144_combined_CREB1_ledge.txt", header = T) %>%
+                            group_by(leadingEdge) %>%
+                            mutate(n_cond = n_distinct(condition)) %>%
+                            ungroup()  %>%
+                            mutate(condition = as.character(condition)) %>%
+                            mutate(intersect = ifelse(n_cond == 2, "both", condition)) %>%
+                            dplyr::select(leadingEdge, intersect) %>%
+                            mutate(leadingEdge = as.character(leadingEdge)) %>%
+                            unique()
+
+ledge_creb_induced <- do.call("rbind", lapply(names(fgsea_analysis2), function(x){
+    df <- fgsea_analysis2[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          unnest(leadingEdge) %>%
+          mutate(condition = x) %>%
+          dplyr::select(leadingEdge, condition)
+  
+  return(df)
+})) %>%
+    filter(!grepl("NK", condition)) %>%
+    filter(!grepl("Bcells", condition)) %>%
+    mutate(group = gsub("_vs.*", "", condition)) %>%
+    mutate(cell_Time = gsub("G[12]_", "", group)) %>%
+    #filter(grepl("G1", condition)) %>%
+    filter(leadingEdge %in% (rv144_creb1_comb_ledge %>%
+                              filter(intersect %in% c("both", "induced")) %>%
+                              .$leadingEdge)) %>%
+    filter(grepl("_wk0", group)) %>%
+  
+    mutate(n_cond_total = n_distinct(group)) %>%
+    group_by(leadingEdge) %>%
+    mutate(n_cond = n_distinct(group)) %>%
+    mutate(concat_conditions = paste(group, collapse = ", ")) %>%
+    ungroup() %>%
+    filter(n_cond == n_cond_total) %>%
+    dplyr::select(leadingEdge, n_cond, concat_conditions) %>%
+    unique()
+  
+
+writeLines(ledge_creb_induced$leadingEdge, con = "output/data/common_CREB1_target_gene_intersect.txt")
+
+
+
+ledge_crebt_DC <- do.call("rbind", lapply(names(fgsea_analysis2), function(x){
+    df <- fgsea_analysis2[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          unnest(leadingEdge) %>%
+          mutate(condition = x) %>%
+          dplyr::select(leadingEdge, condition)
+  
+  return(df)
+})) %>%
+    filter(!grepl("NK", condition)) %>%
+    filter(!grepl("Bcells", condition)) %>%
+    mutate(group = gsub("_vs.*", "", condition)) %>%
+    mutate(cell_Time = gsub("G[12]_", "", group)) %>%
+    #filter(grepl("G1", condition)) %>%
+    filter(grepl("_wk0", group)) %>%
+    group_by(group) %>%
+    mutate(leadingEdge_coll = paste(leadingEdge , collapse = ",")) %>%
+    dplyr::select(group, leadingEdge_coll) %>%
+    unique() %>%
+    rename(leadingEdge = "leadingEdge_coll")
+  
+write.table(ledge_crebt_DC, file = "output/data/T_DC_wk0_leadingEdge_CREB1.txt", quote = F, sep = "\t", row.names = F)
+
+
+```
+
+```{r CREB_correlation_genes}
+
+
+colorAssign <- function(valueVector, scale_limits = NULL, colors = c("blue", "white", "red"), length.vector = 500){
+  colorLS <- colorRampPalette(colors = colors)(length.vector)  
+  if(is.null(scale_limits)){
+    breaks <- seq(-max(abs(valueVector)), max(abs(valueVector)), length.out = length.vector)
+  } else {
+    breaks <- seq(scale_limits[1], scale_limits[2], length.out = length.vector)
+  }
+  
+  
+  minBreak <- which(abs(breaks - min(valueVector)) == min(abs(breaks - min(valueVector))))
+  maxBreak <- which(abs(breaks - max(valueVector)) == min(abs(breaks - max(valueVector))))
+  return(colorLS[minBreak:maxBreak])
+}
+
+
+
+#gsva_CREB_gene_corr <- sapply(pop_iter_titers[grepl("wk[02]_",pop_iter_titers )], 
+gsva_CREB_gene_corr <- sapply(names(gsva_CREB)[names(gsva_CREB) %in% pop_iter_titers] ,                               
+                              simplify = F, USE.NAMES = T, function(x){
+  split_name <- str_split(x, pattern = "__")[[1]]
+  pop <- split_name[1]
+  cell <- str_split(pop, pattern = "_")[[1]][1]
+ 
+  gsva_CREB_matr <- gsva_CREB[[x]]
+  gsva_CREB_matr <- t(as.data.frame(gsva_CREB_matr[,order(gsva_CREB_matr[1,])])) 
+  row.names(gsva_CREB_matr) <- "CREB1"
+  
+  matr <- exprs(split_eset_titers[[pop]]) %>%
+                      as.data.frame(.) %>%
+                      rownames_to_column("Ill_ProbeID") %>%
+                      inner_join(.,probe_GS, by = "Ill_ProbeID") #%>%
+               
+  ledge <- fgsea_intersect_no_kegg_CREB[[x]]$CHEA$output %>%
+        dplyr::select(pathway, leadingEdge) %>%
+        unnest(cols = "leadingEdge") %>%
+        .$leadingEdge
+  
+  
+  ledge_matr <-   matr %>%
+                      filter(BROAD.Gene.Symbol %in% ledge) %>%
+                      dplyr::select(-Ill_ProbeID) %>%
+                      gather(sample, value, -BROAD.Gene.Symbol) %>%
+                      group_by(BROAD.Gene.Symbol, sample) %>%
+                      summarise(mean = mean(value)) %>%
+                      ungroup(.) %>%
+                      group_by(BROAD.Gene.Symbol) %>%
+                      mutate(mean  = scale(mean) ) %>%
+                      ungroup() %>%
+                      #dplyr::select(-value) %>%
+                      spread(sample, mean) %>%
+                      column_to_rownames("BROAD.Gene.Symbol") %>%
+                      as.matrix(.)
+  
+  ledge_stats <- as.data.frame(ledge_matr) %>%
+                  rownames_to_column("SYMBOL") %>%
+                  gather(sample, value, -SYMBOL) %>%
+                  inner_join(., (as.data.frame(gsva_CREB_matr) %>%
+                               rownames_to_column("pathway") %>%
+                                gather(sample, zscore, -pathway)), by = "sample") %>%
+                  group_by(SYMBOL) %>%
+                  do(model = cor.test(.$value , .$zscore, method = "spearman")) %>%
+                  tidy(., model) %>%
+                  ungroup() %>%
+                  dplyr::rename(rho = "estimate") %>%
+                  arrange(desc(rho)) %>%
+                  mutate(row = SYMBOL) %>%
+                  mutate(rank = rank(desc(rho))) %>%
+                  filter(rank <= 500) %>%
+                  column_to_rownames("row")
+
+  col_annot_df <- pData(esetBaselined) %>%
+                  dplyr::select(SampleID, MonkeyNumber, StudyGroup, StudyGroupCellType) %>%
+                  inner_join(., titers, by = "MonkeyNumber") %>%
+                  #gather(outcome, titer, colnames(titers)[grepl("V1V2", colnames(titers))]) %>%
+                  #mutate(titer = log10(titer + 1)) %>%
+                  #mutate(outcome = paste("log10(", outcome, ")", sep = "")) %>%
+                  #spread(outcome, titer) %>%
+              #dplyr::select(SampleID, colnames(titers)[grepl("V1V2", colnames(titers))]) %>%
+              
+              inner_join(., (as.data.frame(gsva_CREB_matr) %>%
+                               rownames_to_column("pathway") %>%
+                                gather(SampleID, `CREB1 z-score`, -pathway)),
+                         by = "SampleID") %>%
+              column_to_rownames("SampleID")
+
+
+  ledge_matr <- ledge_matr[row.names(ledge_stats),colnames(gsva_CREB_matr)]
+
+  gene_corr_hm_annot <- list("CREB1 z-score" = colorAssign(gsva_CREB_matr,
+                         scale_limits = c(-max(abs(gsva_CREB_matr)),
+                                          max(abs(gsva_CREB_matr)))),
+                         "V1V2_IgG_W14" = c("white", "darkgreen"),
+                         "V1V2_IgG_W25" = c("white", "darkgreen"),
+                         "V1V2_IgG_W53" = c("white", "darkgreen"),
+                         "V1V2_IgG_W55" = c("white", "darkgreen")
+                         )
+
+
+# 
+  correlates <- gene_consistency_tables_staggered[[cell]] %>%
+                .$Gene
+# 
+  correlate_stats <- gene_consistency_list[[cell]] %>%
+                      filter(condition == pop) %>%
+                      dplyr::rename(rho = "estimate") %>%
+                      arrange(desc(rho)) %>%
+                      filter(Gene %in% correlates) %>%
+                      .$Gene
+
+  correlate_matr <-   matr %>%
+                      filter(BROAD.Gene.Symbol %in% correlates) %>%
+                      dplyr::select(-Ill_ProbeID) %>%
+                      gather(sample, value, -BROAD.Gene.Symbol) %>%
+                      group_by(BROAD.Gene.Symbol, sample) %>%
+                      summarise(mean = mean(value)) %>%
+                      ungroup(.) %>%
+                      group_by(BROAD.Gene.Symbol) %>%
+                      mutate(mean  = scale(mean) ) %>%
+                      ungroup() %>%
+                      spread(sample, mean) %>%
+                      column_to_rownames("BROAD.Gene.Symbol") %>%
+                      as.matrix(.)
+
+  correlate_matr <- correlate_matr[correlate_stats,colnames(gsva_CREB_matr)]
+
+
+  out <- list("ledge_matr" = ledge_matr, "ledge_stats" = ledge_stats,
+              "correlate_matr" = correlate_matr, "correlate_stats" = correlate_stats,
+              "color_annot" = gene_corr_hm_annot, "column_annot" = col_annot_df)
+  return(out)
+  
+})
+
+# 
+gsva_gene_corr_hm <- sapply(names(gsva_CREB_gene_corr), simplify = F, USE.NAMES = T, function(x){
+  gene_corr_input <- gsva_CREB_gene_corr[[x]]
+  ledge_file <- paste(x, "gene_corr_ledge.pdf")
+  correlate_file <- paste(x, "gene_corr_correlate.pdf", sep = "")
+  titer_time <- str_split(x, pattern = "__")[[1]][2]
+  
+  hm_ledge <- pheatmap(gene_corr_input$ledge_matr,
+                       scale = "none",
+                      cluster_rows = F,
+                      cluster_cols = F,
+                      color = colorAssign(gene_corr_input$ledge_matr),
+                      annotation_col = gene_corr_input$column_annot[c("CREB1 z-score",
+                                                                             titer_time)],
+                      # annotation_row = gsva_HIV_pos_gene_corr_stats[c("rho")],
+                      annotation_colors = gene_corr_input$color_annot,
+                      cellwidth = 8,
+                      cellheight = 0.5, 
+                      show_rownames = F, 
+                      show_colnames = F,
+                      height = 12,
+                      width = 12,
+                      filename = file.path(figureDir,"CREB1_gene_correlations", ledge_file))
+  hm_correlates <- pheatmap(gene_corr_input$correlate_matr,
+                       scale = "none",
+                      cluster_rows = F,
+                      cluster_cols = F,
+                      color = colorAssign(gene_corr_input$correlate_matr),
+                      annotation_col = gene_corr_input$column_annot[c("CREB1 z-score",                                                                                   "V1V2_IgG_W14",
+                                                                      "V1V2_IgG_W25",
+                                                                      "V1V2_IgG_W53",
+                                                                      "V1V2_IgG_W55")],
+                      # annotation_row = gsva_HIV_pos_gene_corr_stats[c("rho")],
+                      annotation_colors = gene_corr_input$color_annot,
+                      cellwidth = 8,
+                      cellheight =8, 
+                      show_rownames = T, 
+                      show_colnames = F,
+                      height = 12,
+                      width = 12,
+                      filename = file.path(figureDir,"CREB1_gene_correlations", correlate_file))
+
+})
+
+
+
+
+
+```
+
+
+
+```{r }

@@ -1,0 +1,363 @@
+---
+title: "p162_integration"
+author: "Adam Pelletier"
+date: "8/11/2019"
+output: html_document
+---
+
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(broom))
+
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+
+```{r }
+
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+
+inputDir <- setup_dir("input")
+outDir <- setup_dir("output")
+
+genesetsDir <- setup_dir(file.path(inputDir,"genesets"))
+figureDir <- setup_dir(file.path(outDir,"figures"))
+dataOutDir <- setup_dir(file.path(outDir,"data"))
+
+
+```
+
+
+
+```{r load_MSD_data}
+
+list.files(path = "~/Documents/RPS_Case/projects/Study36/Mesoscale/", full.names = TRUE)
+
+read.csv("~/Documents/RPS_Case/projects/Study36/Mesoscale/")
+
+
+
+
+```
+
+
+
+```{r all_DEG_list}
+post_vaxx_degs <- fits_output$topTables$`post-3rd immunization` %>%
+                  #fits_output$topTables$`post-3rd immunization` %>%
+                  filter(P.Value < 0.05) %>%
+                  #filter(adj.P.Val < 0.05) %>%
+                  filter(SYMBOL != "") %>%
+                  .$SYMBOL
+
+
+titer_corr_degs <-   split_fits_titers$SIVmac_rIgG_cV2_PostPre$topTable$SIVmac_rIgG_cV2_PostPre %>%
+          filter(P.Value < 0.05) %>%
+          #filter(adj.P.Val < 0.05) %>% 
+          filter(SYMBOL %in% post_vaxx_degs) %>%
+          filter(SYMBOL != "") %>%
+          .$SYMBOL
+
+
+# titer_corr_degs <- c()
+# for(i in names(split_fits_titers)){
+#   for(j in names(split_fits_titers[[i]]))
+#     concat <- paste(i,j, sep = "__")
+#   deg <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+#           filter(P.Value < 0.05) %>%
+#           #filter(adj.P.Val < 0.05) %>% 
+#           filter(BROAD.Gene.Symbol %in% post_vaxx_degs) %>%
+#           filter(BROAD.Gene.Symbol != "") %>%
+#           .$BROAD.Gene.Symbol
+#   titer_corr_degs <- unique(c(titer_corr_degs, deg))
+# }
+
+
+
+```
+
+```{r biomart_GO_annot}
+mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")
+
+
+ensembl_id <-  getBM(attributes= c("hgnc_symbol","ensembl_gene_id"),
+                  filters = 'hgnc_symbol', values = titer_corr_degs, mart = mart)
+
+
+
+
+go_ids <-  getBM(attributes= c("ensembl_gene_id", "go_id", "name_1006", "namespace_1003"),
+                  filters = 'ensembl_gene_id', values = ensembl_id$ensembl_gene_id, mart = mart) 
+
+
+immune_filter <- c("CHEMOKINE","CYTOKINE", "CXCR[0-9]+", "CXCL[0-9]+", "CCR[0-9]+", "CCL[0-9]+","T( |)CELLS","B( |)CELLS",
+                   "FOLLICULAR", "DENDRITIC", "TREG", "TH(1|2)", "TGF(-|)B",
+                   "TNF(A|AR|1R|R)", "FRACTALKINE", "EOTAXIN", "INTERLEUKIN", "IL(-|)[0-9]+", "IFN", "INTERFERON", "MHC", 
+                   "ANTIGEN( |_)PRESENTATION", "ANTIBODY", "TCR", "BCR", "NFKB", "RELB", "TLR[0-9]", 
+                   "TOLL-LIKE", "MYD88", "TRAF", "INFLAMMASOME", "NLR", "NOD-LIKE", "CTLA", "PD(|-)(|L)1","4(|-)1BB","MCSF")
+immune_filter_comb <- paste(c(immune_filter, tolower(immune_filter)), collapse = "|")
+
+go_ids_immune_temp <- go_ids %>%
+                filter(grepl(immune_filter_comb,name_1006)) %>%
+                dplyr::select(go_id, name_1006) %>%
+                unique(.)
+
+#writexl::write_xlsx(go_ids_immune_temp, path = file.path(dataOutDir, "go_term_category_filters.xlsx"))
+
+
+
+go_ids_immune <- read_excel(path = "../output/data/go_term_category_filters_upd.xlsx") %>%
+                  filter(keep == 1)
+
+immune_gene_ids <- merge(ensembl_id,go_ids, by  = "ensembl_gene_id") %>%
+                  filter(go_id %in% go_ids_immune$go_id) %>%
+                  .$hgnc_symbol %>%
+                  unique(.)
+
+
+### GO Accession numbers were taken at https://www.ebi.ac.uk/QuickGO/term/GO:0003700 for transcription factor activity
+
+tf_go_ids <- c("GO:0003700","GO:0000130", "GO:0001071", "GO:0001130", "GO:0001131", 
+                                  "GO:0001151", "GO:0001199", "GO:0001204")
+tf_gene_ids <- merge(ensembl_id, go_ids, by = "ensembl_gene_id") %>%
+              filter(go_id %in% tf_go_ids) %>%
+              .$hgnc_symbol %>%
+                  unique(.)
+
+
+filtered_gene_ids <- c(immune_gene_ids, tf_gene_ids)
+
+
+```
+
+
+
+```{r gsva_CREB_sig}
+
+gsva_CREB <- list()
+
+titer_correlates <- exprs(eset_ALVAC_titer) %>%
+                  as.data.frame(.) %>%
+                  rownames_to_column("Illmn.ID") %>%
+                  gather(Sample.ID, value, -Illmn.ID) %>%
+                  inner_join(., fData(eset_ALVAC_titer) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+                  dplyr::select(SYMBOL, Sample.ID, value) %>%
+                  filter(SYMBOL %in% filtered_gene_ids) %>%
+                  group_by(SYMBOL, Sample.ID) %>%
+                  mutate(mean = mean(value)) %>%
+                  ungroup(.) %>%
+                  dplyr::select(-value) %>%
+                  unique(.) %>%
+                  spread(SYMBOL, mean) 
+
+
+```
+
+
+
+```{r correlate_with_degs}
+CREB_titers_LE <- fgsea_analysis_titers$SIVmac_rIgG_cV2_PostPre$CHEA$output %>%
+                    filter(pathway == "CREB1") %>%
+                    unnest(leadingEdge) %>%
+                    .$leadingEdge
+
+exprs_CREB_titers <- exprs(eset_ALVAC_titer) %>%
+                          as.data.frame(.) %>%
+                          rownames_to_column("Illmn.ID") %>%
+                          inner_join(., fData(eset_ALVAC_titer) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+                          filter(SYMBOL %in% CREB_titers_LE) %>%
+                          dplyr::select(SYMBOL, colnames(exprs(eset_ALVAC_titer))) %>%
+                          column_to_rownames("SYMBOL") %>%
+                          as.matrix(.)
+gsva_CREB_titers <- as.matrix(gsva(exprs_CREB_titers, CHEA_CREB, method = "zscore"))
+gsva_CREB_titers <- gsva_CREB_titers[,order(gsva_CREB_titers[1,]), drop = FALSE]
+
+
+
+
+deg_creb_corr <- gsva_CREB_titers %>%
+                as.data.frame(.) %>%
+                rownames_to_column("CHEA_TF") %>%
+                gather(sample, zscore, -CHEA_TF) %>%
+                inner_join(.,titer_correlates, by = c("sample" = "Sample.ID")) %>%
+                gather(gene, expr_value, -CHEA_TF, -sample, -zscore) %>%
+                group_by(gene) %>%
+                do(model = cor.test(.$expr_value , .$zscore, method = "spearman")) %>%
+                tidy(., model) %>%
+                ungroup(.) %>%
+                filter(p.value < 0.05) %>%
+                mutate(direction = ifelse(sign(estimate) == 1, "UP", "DOWN")) %>%
+                filter(direction == "UP")
+    
+
+
+sig_TF_CHEA <- as.data.frame(fgsea_analysis_titers$wk26_V1V2$CHEA$output) %>%
+                filter(pval < 0.05) %>%
+                filter(sign(NES) == 1) %>%
+                unnest(leadingEdge) %>%
+                filter(pathway != "CREB1") %>%
+                split(., f = .$pathway)
+                
+
+tf_gsva <- do.call("rbind", lapply(names(sig_TF_CHEA), function(x){
+  LE <- sig_TF_CHEA[[x]]$leadingEdge
+  exprs_mat <- exprs(eset_corr_titer) %>%
+                  as.data.frame(.) %>%
+                  rownames_to_column("Illmn.ID") %>%
+                  gather(Sample.ID, value, -Illmn.ID) %>%
+                  inner_join(., fData(eset_corr_titer) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+                  dplyr::select(SYMBOL, Sample.ID, value) %>%
+                  filter(SYMBOL %in% LE) %>%
+                  spread(Sample.ID, value) %>%
+                  column_to_rownames("SYMBOL") %>%
+                  as.matrix(.)
+  gs <- CHEA[names(CHEA) == x]
+  gsva_TF <- gsva(expr = exprs_mat, gs, method = "zscore" )
+  return(gsva_TF)
+}))
+
+  
+corr_TF_CREB <- as.data.frame(gsva_titers_CREB) %>%
+                  rownames_to_column("CREB_CHEA") %>%
+                  gather(sample, CREB_zscore, -CREB_CHEA) %>%
+                  inner_join(., as.data.frame(t(tf_gsva)) %>% rownames_to_column("sample"), by ="sample" ) %>%
+                  gather(TF_CHEA, TF_zscore, -CREB_CHEA, -sample, -CREB_zscore) %>%
+                  group_by(TF_CHEA) %>%
+                  do(model = cor.test(.$TF_zscore, .$CREB_zscore, method = "spearman")) %>%
+                  tidy(., model) %>%
+                  ungroup(.) %>%
+                  filter(sign(estimate) == 1 & p.value < 0.05)
+
+TF_LE_stats <- as.data.frame(fgsea_analysis_titers$wk26_V1V2$CHEA$output) %>%
+                 filter(pathway %in% corr_TF_CREB$TF_CHEA) %>%
+                  unnest(leadingEdge) %>%
+                  filter(leadingEdge %in% deg_creb_corr$gene) %>%
+                  group_by(pathway) %>%
+                  mutate(LE_count = n()) %>%
+                  ungroup(.) %>%
+                  filter(LE_count > 0) %>%
+                  dplyr::select(pathway, LE_count) %>%
+                  unique(.) %>%
+                  top_n(.,10, LE_count)
+
+selected_TF_LE_genes <- as.data.frame(fgsea_analysis_titers$wk26_V1V2$CHEA$output) %>%
+                 filter(pathway %in% corr_TF_CREB$TF_CHEA) %>%
+                  unnest(leadingEdge) %>%
+                  filter(leadingEdge %in% deg_creb_corr$gene) %>%
+                  filter(pathway %in% TF_LE_stats$pathway) %>%
+                  mutate(node = paste(pathway, leadingEdge, sep = "_")) 
+
+
+encode <- getGmt("../input/genesets/ENCODE-tf.gmt") 
+encode_CREB_genes <- geneIds(encode[names(encode) == "CREB1"])[[1]]
+transfac <- getGmt("../input/genesets/TRANSFAC.gmt")
+transfac_CREB_genes <- geneIds(transfac[names(transfac) == "CREB1"])[[1]]
+jasper <- getGmt("../input/genesets/JASPER-tf.gmt")
+jasper_CREB_genes <- geneIds(jasper[names(jasper) == "CREB1"])[[1]]   
+putative_CREB <- getGmt("../input/genesets/putative_CREB1_targets.gmt")
+ 
+
+creb_target_table <- selected_TF_LE_genes %>%
+                    mutate(CREB_target = ifelse(leadingEdge %in% c(transfac_CREB_genes, geneIds(putative_CREB), 
+                                                              jasper_CREB_genes ),"putative", "none")) %>%
+                    mutate(CREB_target = ifelse(leadingEdge %in% c(encode_CREB_genes,geneIds(CHEA_CREB) ), "target",
+                                                CREB_target)) %>%
+                    dplyr::select(node, CREB_target)
+
+
+
+node_gene_table <- selected_TF_LE_genes %>%
+                inner_join(., deg_creb_corr, by = c("leadingEdge" = "gene")) %>%
+                dplyr::select(node, leadingEdge, estimate ) %>%
+                rename(node_value = "estimate",
+                       node_name = "leadingEdge") %>%
+                mutate(node_value = sign(node_value),
+                       node_type = "gene") 
+
+CREB_node_table <- fgsea_analysis_titers$wk26_V1V2$CHEA$output %>%
+                    filter(pathway == "CREB1") %>%
+                    mutate(node = paste(pathway, "CHEA", sep = "_")) %>%
+                    mutate(node_value = sign(NES),
+                           node_type = "module") %>%
+                    rename(node_name = "pathway") %>%
+                    dplyr::select(node, node_name, node_value, node_type)
+
+tf_node_table <- fgsea_analysis_titers$wk26_V1V2$CHEA$output %>%
+                     filter(pathway %in% TF_LE_stats$pathway) %>%
+                      mutate(node = pathway,
+                             node_name = pathway,
+                             node_value = sign(NES),
+                             node_type = "TF_module") %>%
+                      dplyr::select(node, node_name, node_value, node_type)
+ 
+merged_node_table <- do.call("rbind", list(CREB_node_table, tf_node_table, node_gene_table)) %>%
+                      mutate(CREB_target = ifelse(node_name %in% c(transfac_CREB_genes, geneIds(putative_CREB), 
+                                                              jasper_CREB_genes ),"putative", "none")) %>%
+                      mutate(CREB_target = ifelse(node_name %in% c(encode_CREB_genes,geneIds(CHEA_CREB) ), "target",
+                                                CREB_target)) 
+
+write.table(merged_node_table, file = file.path(outDir, "nodes_table_RV144.csv"), quote = FALSE, row.names = FALSE, sep = "!")  
+
+write.table(unique(merged_node_table[merged_node_table$node_type == "gene",]$node_name), quote = F, file = file.path(outDir, "clueGO_UP_input_RV144.txt"), row.names = F, col.names = F)
+
+
+tf_edge_table <- selected_TF_LE_genes %>%
+                  dplyr::select(pathway, node) %>%
+                  rename(source = "pathway",
+                         target = "node") %>%
+                  mutate(edge_value = 1, 
+                         edge_type = "leadingEdge_overlap",
+                         annotation = "TF_target",
+                         edge_color = "turquoise") 
+
+creb_edge_table <- node_gene_table %>%
+                  inner_join(., deg_creb_corr, by = c("node_name" = "gene")) %>%
+                  mutate(source = "CREB1_CHEA") %>%
+                  rename(target = "node", 
+                         edge_value = "estimate") %>%
+                  mutate(edge_type = "spearman_rhp",
+                         annotation = "regression",
+                         edge_color = "red") %>%
+                  dplyr::select(source, target, edge_value, edge_type, annotation, edge_color)
+
+merged_network_table <- rbind(creb_edge_table, tf_edge_table)
+
+                  
+write.csv(merged_network_table, file = file.path(outDir, "network_table_CREB_RV144.csv"), quote = FALSE,
+                                                     row.names = FALSE)
+
+```

@@ -1,0 +1,3066 @@
+---
+title: "downstream_analysis_Study36"
+author: "Adam Pelletier"
+date: "6/25/2019"
+output: html_document
+---
+```{r setup, message = FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(rstudioapi))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GSEABase))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(apeglm))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(sva))
+suppressPackageStartupMessages(library(affy))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(readr))
+library(VennDiagram)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(getwd())
+```
+
+
+```{r }
+
+setup_dir <- function(dir_string) { 
+  ### Verifies creates a directory if it doesn't exist. Returns the dir_path
+  if (dir.exists(dir_string)){
+    dir_set <- dir_string
+  } else {
+    dir.create(dir_string) 
+    dir_set <- dir_string
+  }
+  return(dir_set)
+}
+
+
+inputDir <- setup_dir("input")
+outDir <- setup_dir("output")
+
+genesetsDir <- setup_dir(file.path(inputDir,"genesets"))
+figureDir <- setup_dir(file.path(outDir,"figures"))
+dataOutDir <- setup_dir(file.path(outDir,"data"))
+
+
+```
+
+
+
+```{r gsea_run_post vs pre vaxx, echo=FALSE}
+geneset_list <- list(c2 = file.path(genesetsDir,
+                                        "c2.all.v6.1.symbols.gmt.txt"),
+                     c3 = file.path(genesetsDir,
+                                        "c3.all.v6.1.symbols.gmt.txt"),
+                     CHEA = file.path(genesetsDir,
+                                        "CHEA-tf.gmt"),
+                     interferome = file.path(genesetsDir,
+                                        "interferome.isg.gmt"),
+                     c5 = file.path(genesetsDir,"c5.all.v6.1.symbols.gmt.txt"),
+                     encode = file.path(genesetsDir,"ENCODE-tf.gmt"),
+                     transfac = file.path(genesetsDir,"TRANSFAC.gmt"),
+                     jasper = file.path(genesetsDir,"JASPER-tf.gmt"),
+                     c7 = "~/Documents/MSigDB/msigdb_v6.1_GMTs/subsets/c7.all.v6.1.symbols.gmt.txt"
+                     
+                     )
+
+
+
+
+
+DEG_table_merged <- list()
+for(i in names(split_fits)){
+  for(j in names(split_fits[[i]]$topTable)){
+    cell_pop <- gsub("_wk.*","", j)
+    concat <- paste(j, "_vs_",cell_pop,"_pre", sep ="")
+    DEG_table_merged[[concat]] <- split_fits[[i]]$topTable[[j]]
+  }
+}
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis2 <- list()
+
+for(i in names(DEG_table_merged)){
+  for(j in names(geneset_list)) {
+    if(j %in%  c("CHEA", "c2", "c5", "interferome")){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis2 <- fgsea_output_topT(fgsea_analysis2,
+                               eset_contrast = DEG_table_merged[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+
+for(i in names(DEG_table_merged)){
+  for(j in c("c2", "c5")) {
+      size <- 5000
+    fgsea_analysis2 <- fgsea_output_topT(fgsea_analysis2,
+                               eset_contrast = DEG_table_merged[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+
+
+for(i in names(DEG_table_merged)){
+  for(j in c("encode", "transfac")) {
+      size <- 5000
+    fgsea_analysis2 <- fgsea_output_topT(fgsea_analysis2,
+                               eset_contrast = DEG_table_merged[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+for(i in names(DEG_table_merged)){
+  for(j in c("interferome")) {
+      size <- 5000
+    fgsea_analysis2 <- fgsea_output_topT(fgsea_analysis2,
+                               eset_contrast = DEG_table_merged[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+for(i in names(DEG_table_merged)){
+  for(j in c("c7")) {
+      size <- 5000
+    fgsea_analysis2 <- fgsea_output_topT(fgsea_analysis2,
+                               eset_contrast = DEG_table_merged[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+save(fgsea_analysis2,file = "data/gsea_analysis_post_vs_prevaxx.RData" )
+
+
+cytosolic_DNA_titers <- list() 
+for(i in names(fgsea_analysis2)){
+  cytosolic_DNA_titers[[i]] <- fgsea_analysis2[[i]]$c2$output %>%
+                                filter(grepl("CXCR|CXCL|CCR|CX3C|CHEMOKINE", pathway)) %>%
+                                dplyr::select(-leadingEdge)
+}
+
+
+```
+
+
+```{r post_prevaxx_figures}
+
+pop_short_list <- c("DC","B","T")
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC", 
+                 "CHEMOTAXIS", "MIGRATION")
+genesets_figs <- c("c2", "c3", "CHEA", "c5", "c7")
+
+
+
+chemokine_subset <- "CCR|CXCR|XCR|CX3C|CCL|CXCL|CHEMOTAXIS|MIGRATION|CHEMOKINE"
+cytokine_subset <- "IL[-][0-9]+|INTERLEUKIN|TGF|TNF|IFN|INTERFERON"
+MHC_subset <- "MHC|ANTIGEN|PRESENTATION"
+
+
+annotation_translate <- list("Population"= list("Tcells" = "T cells", "Bcells" = "B cells", "DCcells" = "DC", 
+                                                "NKcells" = "NK cells"),
+                            "Timepoint" = list("wk0" = "Day 2-3", "wk2" = "Week 2", "wk25" = "Week 25"),
+                            "Ab_Timepoint" = list("V1V2_IgG_W14" = "Week 14 V1V2 IgG" , 
+                                                  "V1V2_IgG_W25" = "Week 25 V1V2 IgG", 
+                             "V1V2_IgG_W53" = "Week 53 V1V2 IgG","V1V2_IgG_W55" = "Week 55 V1V2 IgG"),
+                            "Group" = list("G1" = "Group 1", "G2" = "Group 2" ))
+annotation_factor <- unlist(annotation_translate, use.names = F)
+
+
+
+colorAnnotations_raw <- as.data.frame(setNames(buildColorPalette(palettes = c("Paired", "Set2"), 
+                                                                 length = length(annotation_factor)), 
+                          annotation_factor)) %>%
+                        rownames_to_column("condition") %>%
+                        rename(color = 2)
+
+
+annotation_translate$Timepoint$pre <- "Prevaccination"
+# 
+# colorAnnotations_raw <- as.data.frame(setNames(rainbow(length(annotation_factor)), 
+#                           annotation_factor)) %>%
+#                         rownames_to_column("condition") %>%
+#                         rename(color = 2)
+
+colorAnnotations <- sapply(names(annotation_translate),simplify = F, USE.NAMES = T, function(x){
+  conditions <- unlist(annotation_translate[[x]], use.names = F)
+  filt <- colorAnnotations_raw[colorAnnotations_raw$condition %in% conditions,]
+  filt_colAnnot <- setNames(filt$color, factor(filt$condition))
+  return(filt_colAnnot)
+})
+colorAnnotations$Timepoint <- setNames(c("#FC8D62", as.vector(colorAnnotations$Timepoint)), c("Prevaccination", names(colorAnnotations$Timepoint)))
+# colorAnnotations <- sapply(names(annotation_translate), USE.NAMES = T, simplify = F, function(x){
+#   conditions <- unlist(annotation_translate[[x]], use.names = F)
+#   out <- colorAnnotations_raw[names(colorAnnotations_raw) %in% conditions]
+#   return(out)
+# })
+  
+
+
+
+
+fgsea_analysis2_annotations <- do.call("rbind", lapply(names(fgsea_analysis2), function(x){
+      group <- str_extract(x, "G[12]")[[1]]
+      pop <- str_extract(x, "..cells?")[[1]] %>% gsub("_", "", .)
+      timepoint <- str_extract(x, "wk[0-9]+")[[1]]
+      conditionName <- paste(annotation_translate[["Group"]][[group]], 
+                             annotation_translate[["Timepoint"]][[timepoint]], sep = " ")
+      df <- data.frame("Group" = annotation_translate[["Group"]][[group]], 
+                       "Population" = annotation_translate[["Population"]][[pop]], 
+                       "Timepoint" = annotation_translate[["Timepoint"]][[timepoint]], 
+                       "newName" = conditionName, 
+                       "condition" = x) 
+      row.names(df) <- conditionName
+      return(df)
+}))
+
+
+gpcr_chemo <- list()
+
+for(i in pop_short_list){
+  for(j in genesets_figs){
+    if(j == "c2"){
+      gsea_hm(fgsea_analysis2, 
+        contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_chemokines",i,"_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = chemokine_subset,
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    orderRows = "mean",
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270"
+                    )
+
+        gsea_hm(fgsea_analysis2,
+        contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_cytokines",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = cytokine_subset,
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270"
+                    )
+        gsea_hm(fgsea_analysis2,
+        contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_interferon",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = "IFN|INTERFERON",
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270"
+                    )
+
+        gsea_hm(fgsea_analysis2,
+        contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_MHC",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = MHC_subset,
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270"
+                    )
+    }
+    gpcr_chemo[[i]] <-  gsea_hm(fgsea_analysis2,
+                    contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+                    geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset,
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270",
+                    output = "matrix"
+                    )
+    
+
+                   gsea_hm(fgsea_analysis2,
+                    contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+                    geneset = j, 
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_",i,".pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations[c("Group", "Population",
+                                                                   "Timepoint")],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = F,
+                    width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270",
+                    topn =25
+                    )
+  
+
+  }
+}
+
+
+unlist_gpcr_chemok <- unique(unlist(lapply(gpcr_chemo, function(x){ row.names(x)}), use.names = F))
+writeLines(unlist_gpcr_chemok, con = "output/data/gpcr_chemok_ALVAC.txt")
+
+
+for(i in pop_short_list){
+  for(j in c("c2", "c5","c7")){
+    
+    gsea_hm(fgsea_analysis2,
+        contrasts = names(fgsea_analysis2)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis2))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/post_pre/",j,"_gsea_post_pre_TH",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = c("TH1", "TH2", "TH17", "TH22", "TFH"),
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis2_annotations["Population"],
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    width = 25,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20,
+                    angle_col = "270"
+                    )
+  }
+}
+
+
+chea_pathways_common_postvaxx <- sapply(pop_short_list, simplify = F, USE.NAMES = T, function(x){
+  filt_names <- names(fgsea_analysis2)[grepl(x, names(fgsea_analysis2))]
+  filt_names <- filt_names[!grepl("wk25", filt_names)]
+  fgsea_filt <- fgsea_analysis2[names(fgsea_analysis2) %in% filt_names]
+  
+  combin <- do.call("rbind", lapply(names(fgsea_filt), function(y){
+        df <- fgsea_filt[[y]]$CHEA$output %>%
+                as.data.frame() %>%
+                filter(pval < 0.05) %>%
+                filter(NES > 0) %>%
+                mutate(contrast = y) %>%
+                dplyr::select(-leadingEdge)
+        return(df)
+                
+  })) %>%
+    mutate(n_contrast = n_distinct(contrast)) %>%
+    group_by(pathway) %>%
+    mutate(n_contrast_pathway = n_distinct(contrast)) %>%
+    ungroup() %>%
+    filter(n_contrast_pathway >= n_contrast *0.75) %>%
+    dplyr::select(pathway) %>%
+    unique()
+    
+  return(combin$pathway)
+})
+
+chea_pathways_common_postvaxx <- chea_pathways_common_postvaxx[order(names(chea_pathways_common_postvaxx))]
+
+postvaxx_intersect_genes <- intersect(chea_pathways_common_postvaxx$DC, intersect(chea_pathways_common_postvaxx$B,
+                                                                             chea_pathways_common_postvaxx$T))
+
+venn.diagram(chea_pathways_common_postvaxx, filename = "output/figures/venn_CHEA_postvaxx_pops.tiff", 
+             fill = c("#7FFF7F", "#7F7FFF", "#FFFF7F"), alpha = 0.6, cat.col = c("#7FFF7F", "#7F7FFF", "#FFFF7F"), 
+             res = 300, width = 900, height = 900, cat.dist = c(0.05,0.05,0.05))
+
+
+```
+
+
+
+
+```{r gsea_run titer_corr}
+
+DEG_table_merged_titers <- list()
+for(i in names(split_fits_titers)){
+  
+  for(j in names(split_fits_titers[[i]])){
+    #contrast <- gsub("_wk.*","", j)
+    concat <- paste(i, "__",j, sep ="")
+    print(concat)
+    topT <- split_fits_titers[[i]][[j]]$topTable
+    if(dim(as.data.frame(topT))[1] >2){
+      DEG_table_merged_titers[[concat]] <- split_fits_titers[[i]][[j]]$topTable
+    }
+    
+    # print(i)
+    # print(j)
+    # print(head(as.data.frame(split_fits_titers[[i]][[j]]$topTable)))
+  }
+}
+
+
+DEG_table_merged_titers2 <- list()
+for(i in names(split_fits_titers2)){
+  
+  for(j in names(split_fits_titers2[[i]])){
+    #contrast <- gsub("_wk.*","", j)
+    concat <- paste(i, "__",j, sep ="")
+    print(concat)
+    topT <- split_fits_titers2[[i]][[j]]$topTable
+    if(dim(as.data.frame(topT))[1] >2){
+      DEG_table_merged_titers2[[concat]] <- split_fits_titers2[[i]][[j]]$topTable
+    }
+    
+    # print(i)
+    # print(j)
+    # print(head(as.data.frame(split_fits_titers[[i]][[j]]$topTable)))
+  }
+}
+
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_titers <- list()
+
+for(i in names(DEG_table_merged_titers)){
+  for(j in names(geneset_list)) {
+    if(j %in%  c("c2", "c5", "CHEA", "interferome")){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_titers <- fgsea_output_topT(fgsea_analysis_titers,
+                               eset_contrast = DEG_table_merged_titers[[i]][[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_titers2 <- list()
+
+for(i in names(DEG_table_merged_titers2)){
+  for(j in c("CHEA")) {
+    if(j %in%  c("CHEA")){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_titers2 <- fgsea_output_topT(fgsea_analysis_titers2,
+                               eset_contrast = DEG_table_merged_titers2[[i]][[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers2[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers2[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+test <- sapply(names(fgsea_analysis_titers2), simplify =  F, USE.NAMES = T, function(x){
+  df <- fgsea_analysis_titers2[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          dplyr::select(-leadingEdge) %>%
+          mutate(contrast = x)
+})
+
+test <- test[!grepl("NK", names(test))]
+
+for(i in names(DEG_table_merged_titers)){
+  for(j in c("c2", "c5")) {
+      size <- 5000
+    fgsea_analysis_titers <- fgsea_output_topT(fgsea_analysis_titers,
+                               eset_contrast = DEG_table_merged_titers[[i]][[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+for(i in names(DEG_table_merged_titers)){
+  for(j in c("interferome")) {
+      size <- 5000
+    fgsea_analysis_titers <- fgsea_output_topT(fgsea_analysis_titers,
+                               eset_contrast = DEG_table_merged_titers[[i]][[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T", 
+                               maxSize = size)
+    if(dim(fgsea_analysis_titers[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_titers[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+cytosolic_DNA_titers <- list() 
+for(i in names(fgsea_analysis_titers)){
+  cytosolic_DNA_titers[[i]] <- fgsea_analysis_titers[[i]]$c2$output %>%
+                                filter(grepl("CYTOSOLIC", pathway))
+}
+
+
+
+save(fgsea_analysis_titers, file = "data/gsea_titers.RData")
+
+load(file = "data/gsea_titers.RData")
+
+```
+
+
+```{r gsea_run titer_corr_ave, echo=FALSE}
+# 
+# DEG_table_merged_titers_ave <- list()
+# for(i in names(split_fits_titers_ave)){
+#   
+#   for(j in names(split_fits_titers_ave[[i]])){
+#     #contrast <- gsub("_wk.*","", j)
+#     concat <- paste(i, "__",j, sep ="")
+#     print(concat)
+#     topT <- split_fits_titers_ave[[i]][[j]]$topTable
+#     if(dim(as.data.frame(topT))[1] >2){
+#       DEG_table_merged_titers_ave[[concat]] <- split_fits_titers_ave[[i]][[j]]$topTable
+#     }
+#     
+#     # print(i)
+#     # print(j)
+#     # print(head(as.data.frame(split_fits_titers[[i]][[j]]$topTable)))
+#   }
+# }
+# 
+# 
+# GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+# fgsea_analysis_titers_ave <- list()
+# 
+# for(i in names(DEG_table_merged_titers_ave)){
+#   for(j in names(geneset_list)) {
+#     fgsea_analysis_titers_ave <- fgsea_output_topT(fgsea_analysis_titers_ave,
+#                                eset_contrast = DEG_table_merged_titers_ave[[i]][[i]],
+#                                outcome = i,
+#                                geneset_list = geneset_list,
+#                                geneset = j,
+#                                fileDir = GSEA_dir,
+#                                p_thr = 0.99,
+#                                method = "T")
+#     if(dim(fgsea_analysis_titers_ave[[i]][[j]]$output)[1] >0){
+#       print(c(i,j,dim(fgsea_analysis_titers_ave[[i]][[j]]$output)[1]))
+#     }
+#   }
+# }
+# 
+# save(fgsea_analysis_titers_ave, file = "data/gsea_titers_average_exprs.RData")
+# load( file = "data/gsea_titers_average_exprs.RData")
+# 
+
+```
+
+
+
+
+
+```{r gsea_figs_titers, echo=FALSE }
+
+pop_short_list <- c("DC","B","T")
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+
+fgsea_titers_annotations <- do.call("rbind", lapply(names(fgsea_analysis_titers), function(x){
+      #group <- str_extract(x, "G[12]")[[1]]
+      pop <- str_extract(x, ".*cells")[[1]] #%>% gsub("_", "", .)
+      timepoint <- str_extract(x, "wk[0-9]+")[[1]]
+      
+      ab_timepoint <- str_extract(x, "V1V2.*")
+      # conditionName <- paste(annotation_translate[["Timepoint"]][[timepoint]], ": ",
+      #                        annotation_translate[["Ab_Timepoint"]][[ab_timepoint]], sep = "")
+      #print(conditionName)
+      conditionName <- x
+      df <- data.frame("Population" = annotation_translate[["Population"]][[pop]],
+                       "Timepoint" = annotation_translate[["Timepoint"]][[timepoint]],
+                       "Ab_Timepoint" = annotation_translate[["Ab_Timepoint"]][[ab_timepoint]],
+                       "newName" = conditionName)
+      row.names(df) <- conditionName
+      return(df)
+}))
+
+
+gpcr_chemok_titers <- list() 
+for(i in pop_short_list){
+  for(j in genesets_figs){
+
+    
+  gpcr_chemok_titers[[i]][[j]]  <-   gsea_hm(fgsea_analysis_titers, 
+          contrasts = names(fgsea_analysis_titers)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis_titers))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titers/",j,"_gsea_titers_",i,"_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 20,
+                    subset = CREB_subset,
+                    orderRows = "mean",
+                    annotation_col = fgsea_titers_annotations[c("Population","Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    #gaps_col = c(8,16),
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 20,
+                    width = 20,
+                    output = "matrix"
+                    )
+    
+    gsea_hm(fgsea_analysis_titers,
+        contrasts = names(fgsea_analysis_titers)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_analysis_titers))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titers/",j,"_gsea_titers_",i,".pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 20,
+                    orderRows = "mean",
+                    annotation_col = fgsea_titers_annotations[c("Population","Timepoint", "Ab_Timepoint")],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    #gaps_col = c(8,16),
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 20,
+                    width = 20,
+                    topn  =35
+                    )
+
+  }
+}
+
+
+unlist_gpcr_chemok_titers <- list()
+
+for(i in names(gpcr_chemok_titers)){
+  for(j in names(gpcr_chemok_titers[[i]])){
+    if(j %in% c("c2", "c5")){
+      unlist_gpcr_chemok_titers[[i]][[j]] <- row.names(gpcr_chemok_titers[[i]][[j]])
+    }
+    
+  }
+}
+test <- lapply(gpcr_chemok_titers, function(x){
+  lapply(x, function(y){
+    return(row.names(y))
+  })
+})
+
+writeLines(unique(unlist(unlist_gpcr_chemok_titers, use.names = F)), con = "output/data/GPCR_chemok_genesets.txt")
+
+
+chea_pathways_common_titers <- sapply(pop_short_list, simplify = F, USE.NAMES = T, function(x){
+  filt_names <- names(fgsea_analysis_titers)[grepl(x, names(fgsea_analysis_titers))]
+  filt_names <- filt_names[!grepl("wk25", filt_names)]
+  fgsea_filt <- fgsea_analysis_titers[names(fgsea_analysis_titers) %in% filt_names]
+  combin <- do.call("rbind", lapply(names(fgsea_filt), function(y){
+        df <- fgsea_filt[[y]]$CHEA$output %>%
+                as.data.frame() %>%
+                filter(pval < 0.05) %>%
+                filter(NES > 0) %>%
+                mutate(contrast = y) %>%
+                dplyr::select(-leadingEdge)
+        return(df)
+                
+  })) %>%
+    mutate(n_contrast = n_distinct(contrast)) %>%
+    group_by(pathway) %>%
+    mutate(n_contrast_pathway = n_distinct(contrast)) %>%
+    ungroup() %>%
+    filter(n_contrast_pathway >= n_contrast *0.75) %>%
+    dplyr::select(pathway) %>%
+    unique()
+    
+  return(combin$pathway)
+})
+
+chea_pathways_common_titers <- chea_pathways_common_titers[order(names(chea_pathways_common_titers))]
+
+titer_intersect_genes <- intersect(chea_pathways_common_titers$DC, intersect(chea_pathways_common_titers$B,
+                                                                             chea_pathways_common_titers$T))
+
+venn.diagram(chea_pathways_common_titers, filename = "output/figures/venn_CHEA_titers_pops.tiff", 
+             fill = brewer.pal(8, "Dark2")[c(1:3)], alpha = 0.5, cat.col = brewer.pal(8, "Dark2")[c(1:3)], 
+             res = 300, width = 900, height = 900)
+
+
+intersect_venn <- list("Post-vaccination" = postvaxx_intersect_genes, "Correlated to V1V2 IgG Ab" = titer_intersect_genes)
+
+
+ venn.diagram(intersect_venn, filename = "output/figures/venn_CHEA_intersect.tiff", 
+             fill = brewer.pal(8, "Dark2")[c(4:5)], alpha = 0.5, cat.col = brewer.pal(8, "Dark2")[c(4:5)], 
+             res = 300, width = 2000, height = 2000, cat.cex = 1, cex = 1, margin = .2)
+
+
+write(intersect(intersect_venn[[1]], intersect_venn[[2]]), "output/data/titers_postvaxx_study36_intersect_CHEA.txt")
+
+
+rv_CHEA <- data.frame("values" = readLines("rv144/output/data/prepost_titer_overlapping_CHEA.txt"), "ind" = "RV144_only")
+
+
+
+
+rv144_study36_overlap <- stack(intersect_venn) %>%
+                          group_by(values) %>%
+                          mutate(n_conditions = n_distinct(ind)) %>%
+                          ungroup() %>%
+                          filter(n_conditions == 2) %>%
+                          mutate(ind = "Study36") %>%
+                          dplyr::select(-n_conditions) %>%
+                          bind_rows(rv_CHEA) %>%
+                          group_by(values) %>%
+                          mutate(n_conditions = n_distinct(ind)) %>%
+                          ungroup(.) %>%
+                          mutate(overlap = ifelse(n_conditions == 2, "both", ind)) %>%
+                          rename(pathway = "values") %>%
+                          dplyr::select(-ind, -n_conditions) %>%
+                          unique(.) %>%
+                          mutate(n_pathways = n()) %>%
+                          group_by(overlap) %>%
+                          mutate(proportion_of_total = n_distinct(pathway)  / n_pathways) %>%
+                          ungroup() 
+                          
+write.csv(rv144_study36_overlap, file = "output/data/rv144_vs_study36_CHEA_overlap.csv")
+test
+```
+
+
+
+
+
+```{r gsea_run pop_contrast, echo=FALSE}
+
+# DEG_table_merged_titers_ave <- list()
+# for(i in names(split_fits_titers_ave)){
+#   
+#   for(j in names(split_fits_titers_ave[[i]])){
+#     #contrast <- gsub("_wk.*","", j)
+#     concat <- paste(i, "__",j, sep ="")
+#     print(concat)
+#     topT <- split_fits_titers_ave[[i]][[j]]$topTable
+#     if(dim(as.data.frame(topT))[1] >2){
+#       DEG_table_merged_titers_ave[[concat]] <- split_fits_titers_ave[[i]][[j]]$topTable
+#     }
+#     
+#     # print(i)
+#     # print(j)
+#     # print(head(as.data.frame(split_fits_titers[[i]][[j]]$topTable)))
+#   }
+# }
+
+
+
+GSEA_dir <- setup_dir(file.path(dataOutDir, "GSEA"))
+fgsea_analysis_pop_contrast <- list()
+
+for(i in names(deg_pops_contrast)){
+  for(j in names(geneset_list)) {
+    if(j == "CHEA"){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_pop_contrast <- fgsea_output_topT(fgsea_analysis_pop_contrast,
+                               eset_contrast = deg_pops_contrast[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T",
+                               maxSize = size)
+    if(dim(fgsea_analysis_pop_contrast[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_pop_contrast[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+
+
+
+save(fgsea_analysis_pop_contrast, file = "data/gsea_pop_contrasts.RData")
+load( file = "data/gsea_pop_contrasts.RData")
+
+
+```
+
+
+```{r gsea_figs_pops_contrast, echo=FALSE }
+
+pop_short_list <- c("DC","B","T")
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+cross_time_contrasts <- data.frame("contrasts" = names(fgsea_analysis_pop_contrast)) %>%
+                          group_by(contrasts) %>%
+                          mutate(same_time = ifelse(length(unique(unlist(str_extract_all(contrasts,"wk[0-9]+")))) == 1, 
+                                                    "yes", "no")) 
+        
+
+fgsea_cross_time_annotations <- do.call("rbind", 
+                                        lapply(cross_time_contrasts[cross_time_contrasts$same_time == "no",]$contrasts,
+                                            function(x){
+      
+      pop <- str_extract(x, "..cells?")[[1]] %>% gsub("_", "", .) %>% gsub("-", "", .)
+      timepoint2 <- str_extract(x, "wk[0-9]+")
+      timepoint1 <- str_extract(x, "wk[0-9]$")
+      conditionName <- paste(annotation_translate[["Timepoint"]][[timepoint2]], " vs ",
+                             annotation_translate[["Timepoint"]][[timepoint1]]," ", 
+                             annotation_translate[["Population"]][[pop]],  sep = "")
+      df <- data.frame("Population" = annotation_translate[["Population"]][[pop]],
+                       "newName" = conditionName,
+                       "condition" = x)
+      row.names(df) <- conditionName
+      return(df)
+}))                                
+                                 
+
+
+  #for(j in genesets_figs){
+    # gsea_hm(fgsea_analysis_pop_contrast,
+    #     contrasts = cross_time_contrasts[cross_time_contrasts$same_time == "no",]$contrasts,
+    #     geneset = "CHEA",
+    #                 pval_thr = 0.05,
+    #                 filename  = paste("output/figures/pop_contrasts/CHEA_gsea_cross_time","_CREB.pdf", sep = ""),
+    #                 clusterRowsGap = FALSE,
+    #                 max_gs = 20,
+    #                 subset = CREB_subset,
+    #                 #nnotation_col = fgsea_cross_time_annotations["Population"],
+    #                 labels_col = fgsea_cross_time_annotations["condition"],
+    #                 #annotation_colors = colorAnnotations,
+    #                 annotation_dict = annotation_translate
+    #                 )
+#}
+    cross_time_mat_CREB <- gsea_hm(fgsea_analysis_pop_contrast,
+        contrasts = cross_time_contrasts[cross_time_contrasts$same_time == "no",]$contrasts,
+        geneset = "CHEA",
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titers/",j,"_gsea_cross_time",".pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 20,
+                    output = "matrix",
+                    subset = "CREB1"
+                    )
+    
+cross_time_mat_CREB <- t(cross_time_mat_CREB) %>% 
+                      as.data.frame(.) %>%
+                      rownames_to_column("condition") %>%
+                      inner_join(.,fgsea_cross_time_annotations, by = "condition") %>%
+                      dplyr::select(CREB1, newName) %>%
+                      column_to_rownames("newName") %>%
+                      as.matrix(.)
+                      
+ paletteLength <- 500
+colorLS <- colorRampPalette(colors = c("blue", "cyan",
+                                       "white",
+                                      "yellow", "red"))(paletteLength)
+   
+#topScale <- max(abs(min(cross_time_mat_CREB)),abs(max(cross_time_mat_CREB)))
+
+myBreaks <- seq(min(topScale), max(topScale), length.out=paletteLength)
+    
+cross_time_hm_CREB <-  pheatmap(cross_time_mat_CREB,
+                         cluster_rows = F,
+                         cluster_cols = F,
+                         cellwidth = 20,
+                         cellheight = 20,
+                         angle_col = "315",
+                         fontsize = 20,
+                         gaps_row = c(3,6),
+                         color = colorLS,
+                         breaks = myBreaks,
+                         filename = paste("output/figures/pop_contrasts/CHEA_gsea_cross_time","_CREB.pdf", sep = "")
+                         )
+    
+    
+#     gsea_hm(fgsea_analysis_pop_contrast,
+#         contrasts = cross_time_contrasts[cross_time_contrasts$same_time == "yes",]$contrasts,
+#         geneset = j,
+#                     pval_thr = 0.05,
+#                     filename  = paste("output/figures/pop_contrasts/",j,"_gsea_cross_pops","_CREB.pdf", sep = ""),
+#                     clusterRowsGap = FALSE,
+#                     max_gs = 20,
+#                     subset = CREB_subset
+#                     )
+# 
+#     gsea_hm(fgsea_analysis_pop_contrast,
+#         contrasts = cross_time_contrasts[cross_time_contrasts$same_time == "yes",]$contrasts,
+#         geneset = j,
+#                     pval_thr = 0.05,
+#                     filename  = paste("output/figures/titers/",j,"_gsea_cross_pops",".pdf", sep = ""),
+#                     clusterRowsGap = FALSE,
+#                     max_gs = 20
+#                     )
+# 
+#   
+# }
+
+
+
+```
+
+
+```{r gsea_G2G1, echo=FALSE}
+
+fgsea_analysis_G2G1<- list()
+
+for(i in names(DEG_table_G1G2)){
+  for(j in names(geneset_list)) {
+    if(j %in%  c("CHEA", "interferome", "encode", "jasper" )){
+      size <- 5000
+    } else {
+      size <- 500
+    }
+    fgsea_analysis_G2G1 <- fgsea_output_topT(fgsea_analysis_G2G1,
+                               eset_contrast = DEG_table_G1G2[[i]],
+                               outcome = i,
+                               geneset_list = geneset_list,
+                               geneset = j,
+                               fileDir = GSEA_dir,
+                               p_thr = 0.99,
+                               method = "T",
+                               maxSize = size)
+    if(dim(fgsea_analysis_G2G1[[i]][[j]]$output)[1] >0){
+      print(c(i,j,dim(fgsea_analysis_G2G1[[i]][[j]]$output)[1]))
+    }
+  }
+}
+
+# for(i in names(DEG_table_G1G2)){
+#     fgsea_analysis_G2G1 <- fgsea_output_topT(fgsea_analysis_G2G1,
+#                                eset_contrast = DEG_table_G1G2[[i]],
+#                                outcome = i,
+#                                geneset_list = geneset_list,
+#                                geneset = "CHEA",
+#                                fileDir = GSEA_dir,
+#                                p_thr = 0.99,
+#                                method = "T",
+#                                maxSize = 5000)
+#     if(dim(fgsea_analysis_G2G1[[i]][["CHEA"]]$output)[1] >0){
+#       print(c(i,"CHEA",dim(fgsea_analysis_G2G1[[i]][["CHEA"]]$output)[1]))
+#     
+#   }
+# }
+
+
+save(fgsea_analysis_G2G1, file = "data/gsea_G2G1.RData")
+
+load(file = "data/gsea_G2G1.RData")
+
+
+
+
+
+test <- sapply(names(fgsea_analysis_G2G1), USE.NAMES = T, simplify = FALSE, function(x){
+    df <- fgsea_analysis_G2G1[[x]]$CHEA$output %>%
+    #df <- fgsea_analysis_G2G1[[x]]$encode$output %>%
+                filter(pathway == "CREB1") %>%
+                dplyr::select(-leadingEdge)
+    return(df)
+})
+
+
+
+
+```
+
+```{r }
+
+delevel_g2g1 <- delevel_fgsea(fgsea_analysis_G2G1, geneset_list)
+delevel_prevaxx_postvaxx <- delevel_fgsea(fgsea_analysis2, geneset_list)
+fgsea_analysis_g2g1_ALVAC <- sapply(names(delevel_g2g1), simplify = FALSE, USE.NAMES = TRUE, function(x){
+    G2_filter <- gsub("-G1.*", "", x)
+    #print(G2_filter)
+    G1_filter <- gsub(".*G1_", "G1_", x)
+    G1_filter <- gsub("_geneset.*", "", G1_filter)
+    gs <- gsub(".*_geneset:", "", x)
+    
+    g2_pathways <- delevel_prevaxx_postvaxx[grepl(G2_filter, names(delevel_prevaxx_postvaxx))] 
+    g2_pathways <- g2_pathways[grepl(gs, names(g2_pathways))]
+    g2_pathways <- g2_pathways[[1]]$output %>%
+                    filter(padj < 0.05) %>%
+                    filter(!grepl("MIR[0-9]+",pathway)) %>%
+                    .$pathway
+    g1_pathways <- delevel_prevaxx_postvaxx[grepl(G1_filter, names(delevel_prevaxx_postvaxx))] 
+    g1_pathways <- g1_pathways[grepl(gs, names(g1_pathways))]
+    g1_pathways <- g1_pathways[[1]]$output %>%
+                    filter(padj < 0.05) %>%
+                    filter(!grepl("MIR[0-9]+",pathway)) %>%
+                    .$pathway
+
+    intersect_pathways <- intersect(g2_pathways, g1_pathways)
+    out <- delevel_g2g1[[x]]
+    out$output <- out$output %>%
+              filter(pathway %in% intersect_pathways)
+    return(out)
+})
+
+test <- delevel_prevaxx_postvaxx[grepl("G2_Bcells_wk0", names(delevel_prevaxx_postvaxx))]
+
+```
+
+
+```{r g2g1}
+pop_short_list <- c("DC","B","T")
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+
+for(i in pop_short_list){
+  for(j in genesets_figs){
+    print(i)
+    print(j)
+      
+    gsea_hm(fgsea_analysis_G2G1, 
+        contrasts = names(fgsea_analysis_G2G1)[grepl(paste(i,"cells_wk[02]-", sep = ""), names(fgsea_analysis_G2G1))],
+        geneset = j ,
+                    pval_thr = 0.25,
+                    filename  = paste("output/figures/G2G1/",j,"_gsea_G2G1_",i,"_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 20,
+                    subset = CREB_subset
+                    )
+    
+    gsea_hm(fgsea_analysis_G2G1,
+        contrasts = names(fgsea_analysis_G2G1)[grepl(paste(i,"cells_wk[02]-", sep = ""), names(fgsea_analysis_G2G1))],
+        geneset = j,
+                    pval_thr = 0.25,
+                    filename  = paste("output/figures/G2G1/",j,"_gsea_G2G1_",i,".pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 20
+                    )
+  }
+}
+
+
+
+
+```
+
+
+
+```{r GPCR_filtered_pos}
+
+fgsea_titers_pos_GPCR <- sapply(names(fgsea_analysis_titers), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  input <- fgsea_analysis_titers[[x]]
+  nested_input <- sapply(names(input), simplify = FALSE, USE.NAMES = TRUE, function(y){
+    nested_in <- input[[y]]
+    df <- nested_in$output %>% filter(grepl("CREB|GPCR|DARPP", pathway)) %>% filter(NES > 0)
+    nested_in$output <- df
+    return(nested_in)
+  })
+  
+  return(nested_input)
+})
+
+
+fgsea_pos_GPCR <- sapply(names(fgsea_analysis2), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  input <- fgsea_analysis2[[x]]
+  nested_input <- sapply(names(input), simplify = FALSE, USE.NAMES = TRUE, function(y){
+    nested_in <- input[[y]]
+    df <- nested_in$output %>% filter(grepl("CREB|GPCR|DARPP", pathway)) %>% filter(NES > 0)
+    nested_in$output <- df
+    return(nested_in)
+  })
+  
+  return(nested_input)
+})
+
+
+
+common_g1 <- list()
+delevel_fgsea_analysis2 <- delevel_fgsea(fgsea_analysis2, geneset_list)
+for(i in pop_short_list){
+  temp <- delevel_fgsea_analysis2[grepl(i, paste("G1_", names(delevel_fgsea_analysis2), sep = ""))]
+  bound <- do.call("rbind", lapply(names(temp), function(x){
+    temp2 <- temp[[x]]$output %>%
+                      filter(pval < 0.05) %>% 
+                      filter(!grepl("UNKNOWN", pathway)) %>%
+                      mutate(contrast = x)
+    return(temp2)
+  })) %>%
+    .$pathway
+  common_g1[[i]] <- c(common_g1[[i]],bound)
+}
+common_g1_intersect <- unique(intersect(common_g1$T,intersect(common_g1$DC, common_g1$B )))
+
+pathway_list_intersect <- list()
+for(i in names(fgsea_analysis_titers)){
+  pop <- paste(gsub("__.*","", i),"_", sep = "")
+  pop_contrast <- names(fgsea_analysis2)[grepl(pop, names(fgsea_analysis2))]
+  pop_contrast_G1 <- pop_contrast[grepl("G1", pop_contrast)]
+  pop_contrast_G2 <- pop_contrast[grepl("G2", pop_contrast)]
+  pop_short <- gsub(".{1}$","", pop)
+  print(pop_short)
+  pop_shortest <- gsub("G2_","", pop)
+  pop_shortest <- gsub("_wk.*", "", pop_shortest)
+  pop_contrast_g2g1 <- names(fgsea_analysis_G2G1)[grepl(pop_short, names(fgsea_analysis_G2G1))]
+  for(j in names(fgsea_analysis_titers[[i]])){
+    contrast_df_g2 <- fgsea_analysis2[[pop_contrast_G2]][[j]]$output
+    contrast_pathways <- contrast_df_g2[contrast_df_g2$pval < 0.05,]$pathway
+    
+    pop_contrast_g1 <- gsub("G2", "G1", pop_contrast_G1)
+    contrast_df_g1 <- fgsea_analysis2[[pop_contrast_g1]][[j]]$output
+    contrast_pathways_g1 <- contrast_df_g1[contrast_df_g1$pval < 0.05,]$pathway
+    
+    
+    
+    contrast_df_g2g1 <- fgsea_analysis_G2G1[[pop_contrast_g2g1]][[j]]$output
+    contrast_pathways_g2g1 <- contrast_df_g2g1[contrast_df_g2g1$pval < 0.05,]
+    if(is.null(contrast_pathways_g2g1)){
+      contrast_pathways_g2g1 <- c()
+    } else {
+      contrast_pathways_g2g1 <- contrast_pathways_g2g1 %>%
+                                  .$pathway
+    }
+    #intersection <- intersect(contrast_pathways_g2g1,intersect(contrast_pathways_g1, contrast_pathways))
+    intersection <- intersect(contrast_pathways_g1, contrast_pathways)
+    pathway_list_intersect[[pop_shortest]] <- c(pathway_list_intersect[[pop_shortest]],intersection)
+    
+    # fgsea_intersect[[i]][[j]] <- fgsea_analysis_titers[[i]][[j]]
+    # # print(contrast_pathways)
+    # intersect_df <-  fgsea_analysis_titers[[i]][[j]]$output %>%
+    #                   #filter(pathway %in% intersect(intersect(contrast_pathways, contrast_pathways_g1), contrast_pathways_g2g1))
+    #                   filter(pathway %in% intersect(contrast_pathways, contrast_pathways_g1))
+    # fgsea_intersect[[i]][[j]]$output <- intersect_df %>% dplyr::select(-leadingEdge)
+  }
+}
+
+
+rv144_fgsea <- readRDS("rv144/gsea_analysis_prepost_RV144.RDS")
+rv144_pathway_filter <- rv144_fgsea$`post_VACCINE-pre_VACCINE`$CHEA$output %>%
+                          rowid_to_column("rank") %>%
+                          filter(rank <= 20)
+
+
+fgsea_intersect <- list()
+for(i in names(fgsea_analysis_titers)){
+  pop <- paste(gsub("__.*","", i),"_", sep = "")
+  pop_contrast <- names(fgsea_analysis2)[grepl(pop, names(fgsea_analysis2))]
+  pop_short <- gsub(".{1}$","", pop)
+  pop_shortest <- gsub("G2_","", pop)
+  pop_shortest <- gsub("_wk.*", "", pop_shortest)
+  pop_contrast_g2g1 <- names(fgsea_analysis_G2G1)[grepl(pop_short, names(fgsea_analysis_G2G1))]
+  for(j in names(fgsea_analysis_titers[[i]])){
+    contrast_df_g2 <- fgsea_analysis2[[pop_contrast]][[j]]$output
+    contrast_pathways <- contrast_df_g2[contrast_df_g2$pval < 0.05,]$pathway
+
+    pop_contrast_g1 <- gsub("G2", "G1", pop_contrast)
+    contrast_df_g1 <- fgsea_analysis2[[pop_contrast_g1]][[j]]$output
+    contrast_pathways_g1 <- contrast_df_g1[contrast_df_g1$pval < 0.05,]$pathway
+
+
+
+    contrast_df_g2g1 <- fgsea_analysis_G2G1[[pop_contrast_g2g1]][[j]]$output
+    contrast_pathways_g2g1 <- contrast_df_g2g1[contrast_df_g2g1$pval < 0.05,]
+    if(is.null(contrast_pathways_g2g1)){
+      contrast_pathways_g2g1 <- c()
+    } else {
+      contrast_pathways_g2g1 <- contrast_pathways_g2g1 %>%
+                                   .$pathway
+    }
+                                
+    
+    
+    fgsea_intersect[[i]][[j]] <- fgsea_analysis_titers[[i]][[j]]
+    # print(contrast_pathways)
+    intersect_df <-  fgsea_analysis_titers[[i]][[j]]$output %>%
+                      # filter(pathway %in% intersect(intersect(contrast_pathways, contrast_pathways_g1), contrast_pathways_g2g1))
+                      filter(pathway %in% pathway_list_intersect[[pop_shortest]]) #%>%
+                      #filter(pathway %in% rv144_pathway_filter$pathway)
+    fgsea_intersect[[i]][[j]]$output <- intersect_df 
+  }
+}
+
+
+
+
+fgsea_intersect_no_kegg <- fgsea_intersect
+for(i in names(fgsea_intersect)){
+  fgsea_intersect_no_kegg[[i]]$c2$output <- fgsea_intersect[[i]]$c2$output %>%
+                                              filter(!grepl("KEGG", pathway)) 
+  fgsea_intersect_no_kegg[[i]]$c3$output <- fgsea_intersect[[i]]$c3$output %>%
+                                              filter(!grepl("MIR[0-9]+", pathway)) %>%
+                                              filter(!grepl("UNKNOWN", pathway))
+                                              #filter(grepl("REACTOME|BIOCARTA", pathway))
+}
+
+
+```
+
+
+
+```{r fgsea_object_functions}
+delevel_fgsea <- function(fgsea_object, geneset_list){
+  outlist <- list()
+  for(i in names(fgsea_object)){
+    for(j in names(geneset_list)){
+      indexname <- paste(i,"_" ,"geneset:",j, sep = "")
+      outlist[[indexname]] <- fgsea_object[[i]][[j]]
+    }
+  }
+  return(outlist)
+}
+
+
+relevel_fgsea <- function(fgsea_object_deleveled){
+  outlist <- list()
+  for(i in names(fgsea_object_deleveled)){
+    contrast_name <- unlist(str_split(i, pattern = "_geneset:*"))
+    print(contrast_name)
+      outlist[[contrast_name[1]]][[contrast_name[2]]] <- fgsea_object_deleveled[[1]]
+    }
+  return(outlist)
+}
+
+```
+
+
+
+
+
+```{r ave_across_timepoints}
+
+dlvl_intersect_no_kegg <- delevel_fgsea(fgsea_intersect_no_kegg, geneset_list = geneset_list) 
+dlvl_intersect_no_kegg_c3 <- dlvl_intersect_no_kegg[grepl("geneset:c3", names(dlvl_intersect_no_kegg))]
+
+test <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+    filt_gsea_object <- dlvl_intersect_no_kegg_c3[grepl(paste(x,"cells", sep =""), names(dlvl_intersect_no_kegg_c3))]
+    comb_df <- do.call("rbind",lapply(names(filt_gsea_object), function(y){
+          df <- filt_gsea_object[[y]]$output %>%
+              mutate(condition = y)
+      return(df)
+    })) %>%
+    group_by(pathway) %>%
+    mutate(mean_p = mean(pval)) %>%
+    mutate(mean_NES = mean(NES)) %>%
+    unnest(.) %>%
+    dplyr::select(pathway, mean_p, mean_NES) %>%
+    unique(.) %>%
+    arrange(desc(abs(mean_NES))) %>%
+    ungroup(.) 
+    return(comb_df)
+})
+
+
+
+
+
+
+
+```
+
+
+
+
+```{r cross_population intersect}
+
+
+pop <- unique(gsub(".*cells_","", names(fgsea_intersect_no_kegg)))
+
+
+fgsea_intersect_cross_pop_pathways <- list("DCcells" = c(), "Tcells" = c(), "Bcells" = c())
+for(i in names(fgsea_intersect_no_kegg)){
+  pop <- str_extract(i, pattern = ".*cells")
+  sig_gs <- fgsea_intersect_no_kegg[[i]]$CHEA$output %>%
+              filter(pval < 0.05) %>%
+              .$pathway
+  fgsea_intersect_cross_pop_pathways[[pop]] <- c(fgsea_intersect_cross_pop_pathways[[pop]], sig_gs)
+}
+
+cross_pop_intersection <- intersect(fgsea_intersect_cross_pop_pathways$DCcells, 
+                                    intersect(fgsea_intersect_cross_pop_pathways$Bcells,
+                                              fgsea_intersect_cross_pop_pathways$Tcells ))
+
+fgsea_intersect_cross_pop <- fgsea_intersect_no_kegg
+for(i in names(fgsea_intersect_no_kegg)){
+  fgsea_intersect_cross_pop[[i]]$CHEA$output <- fgsea_intersect_no_kegg[[i]]$CHEA$output %>%
+                                                filter(pathway %in% cross_pop_intersection)
+                                                
+}
+
+```
+
+
+```{r deg_tfs }
+
+titer_corr_degs <- c()
+for(i in names(split_fits_titers)){
+  for(j in names(split_fits_titers[[i]]))
+    concat <- paste(i,j, sep = "__")
+  deg <- split_fits_titers[[i]][[j]]$topTable[[concat]] %>%
+          filter(P.Value < 0.05) %>%
+          #filter(adj.P.Val < 0.05) %>% 
+          filter(BROAD.Gene.Symbol %in% post_vaxx_degs) %>%
+          filter(BROAD.Gene.Symbol != "") %>%
+          .$BROAD.Gene.Symbol
+  titer_corr_degs <- unique(c(titer_corr_degs, deg))
+}
+
+mart = useMart("ensembl", dataset="hsapiens_gene_ensembl")
+
+
+ensembl_id <-  getBM(attributes= c("hgnc_symbol","ensembl_gene_id"),
+                  filters = 'hgnc_symbol', values = titer_corr_degs, mart = mart)
+
+go_ids <-  getBM(attributes= c("ensembl_gene_id", "go_id", "name_1006", "namespace_1003"),
+                  filters = 'ensembl_gene_id', values = ensembl_id$ensembl_gene_id, mart = mart) 
+
+tf_go_ids <- c("GO:0003700","GO:0000130", "GO:0001071", "GO:0001130", "GO:0001131", 
+                                  "GO:0001151", "GO:0001199", "GO:0001204")
+tf_gene_ids <- merge(ensembl_id, go_ids, by = "ensembl_gene_id") %>%
+              filter(go_id %in% tf_go_ids) %>%
+              .$hgnc_symbol %>%
+                  unique(.)
+
+
+
+tf_degs_topTables <- sapply(names(fgsea_intersect_no_kegg), simplify = FALSE, USE.NAMES = TRUE, function(x){
+  split <- str_split(x, pattern = "__")[[1]]
+  df <- split_fits_titers[[split[1]]][[split[2]]]$topTable[[x]] %>%
+            filter(BROAD.Gene.Symbol %in% tf_gene_ids) 
+  return(df)
+})
+
+averaged_tf_topTables <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+  filt_deg_tf_list <- tf_degs_topTables[grepl(x, names(tf_degs_topTables))]
+  filt_deg_tf_list <- tf_degs_topTables[grepl("wk[02]_", names(filt_deg_tf_list))]
+  merged_df <- do.call("rbind", lapply(names(filt_deg_tf_list), function(y){
+          df <- filt_deg_tf_list[[y]] %>%
+            mutate(condition = y) %>%
+            rowid_to_column("rank")
+          return(df)
+  }))
+  averaged_df <- merged_df %>%
+          group_by(BROAD.Gene.Symbol) %>%
+          summarise(mean_LFC = prod(logFC) ^ (1/n()) ,
+                    mean_p = mean(P.Value)) %>%
+          #filter(mean_p < 0.05) %>%
+          arrange(mean_p)
+  return(averaged_df)
+})
+
+
+pops <- as.vector(outer(c("G1", "G2"), c("_DCcells", "_Tcells", "_Bcells"), FUN = "paste0"))
+pops_time <- as.vector(outer(pops, c("_wk0", "_wk2"), FUN = "paste0"))
+
+
+tf_degs_topTables_prepost <- sapply(pops_time, simplify = FALSE, USE.NAMES = TRUE, function(x){
+  pop <- str_extract(x, pattern = "G[12]_.*cells")
+  print(pop)
+  # split <- str_split(x, pattern = "__")[[1]]
+  df <- split_fits[[pop]]$topTable[[x]] %>%
+            filter(BROAD.Gene.Symbol %in% tf_gene_ids)
+  return(df)
+})
+
+
+
+sig_DC_CHEA <- sapply(pop_short_list, simplify = FALSE, USE.NAMES= TRUE ,function(x){
+          filt_list <- fgsea_intersect_no_kegg[grepl(x, names(fgsea_intersect_no_kegg))]
+          merged_df <- do.call("rbind", lapply(names(filt_list), function(y){
+                df <- filt_list[[y]]$CHEA$output  %>%
+                        dplyr::select(-leadingEdge) %>%
+                        mutate(condition = y)
+                return(df)
+          })) %>%
+            filter(pval < 0.05) %>%
+            dplyr::select(pathway) %>%
+            unique(.)
+          return(merged_df)
+})
+
+averaged_tf_topTables_prepost <- sapply(pop_short_list, simplify = FALSE, USE.NAMES = TRUE, function(x){
+  filt_deg_tf_list <- tf_degs_topTables_prepost[grepl(x, names(tf_degs_topTables_prepost))]
+  #return(filt_deg_tf_list)
+  filt_deg_tf_list <- tf_degs_topTables_prepost[grepl("wk[02]", names(filt_deg_tf_list))]
+  merged_df <- do.call("rbind", lapply(names(filt_deg_tf_list), function(y){
+          df <- filt_deg_tf_list[[y]] %>%
+            mutate(condition = y) 
+          return(df)
+  }))
+  #return(merged_df)
+  averaged_df <- merged_df %>%
+          group_by(BROAD.Gene.Symbol) %>%
+          filter(P.Value < 0.05) %>%
+          mutate(mean_LFC = prod(logFC) ^ (1/n()),
+                 max_p = max(P.Value)) %>%
+          ungroup(.) %>%
+          dplyr::select(BROAD.Gene.Symbol, mean_LFC, max_p) %>%
+          unique(.) %>%
+          arrange(max_p) %>%
+          filter(BROAD.Gene.Symbol %in% sig_DC_CHEA[[x]]$pathway)
+          
+  return(averaged_df)
+})
+
+cross_pop_tf_deg <- intersect(averaged_tf_topTables_prepost$DC$BROAD.Gene.Symbol, 
+                              intersect(averaged_tf_topTables_prepost$T$BROAD.Gene.Symbol,
+                                        averaged_tf_topTables_prepost$B$BROAD.Gene.Symbol))
+
+
+
+
+
+
+
+
+
+for(i in names(tf_degs_topTables_prepost)){
+  df <- tf_degs_topTables_prepost[[i]]
+  df <- df[df$BROAD.Gene.Symbol == "CREB1",]
+  print(i)
+  print(df)
+}
+
+
+
+
+```
+
+
+
+
+
+```{r }
+pop_short_list <- c("DC","B","T")
+
+CREB_subset <- c("CREB", "GPCR", "DARPP", "PKA", "CHEMOKINE", "CXCR[0-9]+", "CCR[0-9]+", "ATF1", "CREM", "EPAC")
+genesets_figs <- c("c2", "c3", "CHEA")
+
+tf_subset <- paste(cross_pop_tf_deg, collapse = "|")
+
+
+fgsea_analysis_intersect_annotations <- do.call("rbind", lapply(names(fgsea_intersect), function(x){
+      #group <- str_extract(x, "G[12]")[[1]]
+      pop <- str_extract(x, ".*cells")[[1]] #%>% gsub("_", "", .)
+      timepoint <- str_extract(x, "wk[0-9]+")[[1]]
+      
+      ab_timepoint <- str_extract(x, "V1V2.*")
+      # conditionName <- paste(annotation_translate[["Timepoint"]][[timepoint]], ": ",
+      #                        annotation_translate[["Ab_Timepoint"]][[ab_timepoint]], sep = "")
+      #print(conditionName)
+      conditionName <- x
+      df <- data.frame("Population" = annotation_translate[["Population"]][[pop]],
+                       "Timepoint" = annotation_translate[["Timepoint"]][[timepoint]],
+                       "Ab_Timepoint" = annotation_translate[["Ab_Timepoint"]][[ab_timepoint]],
+                       "newName" = conditionName)
+      row.names(df) <- conditionName
+      return(df)
+}))
+
+all_contrast <- names(fgsea_intersect)[grepl(paste(c(pop_short_list), collapse = "|"), names(fgsea_intersect))]
+all_contrast <- all_contrast[grepl("_wk[02]_", all_contrast)]
+
+
+gsea_hm(fgsea_intersect, 
+        contrasts = all_contrast,
+        geneset = "CHEA",
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/CHEA_gsea_intersect_tf_cross_pop_all.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = tf_subset,
+                    orderRows = "mean",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Population","Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = c(8,16),
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 20,
+                    width = 20
+                    )
+ 
+
+
+
+out_matrix <- list()
+for(i in pop_short_list){
+  for(j in genesets_figs){
+    if(j == "CHEA"){
+      out_matrix[[i]] <- gsea_hm(fgsea_intersect, 
+        contrasts = names(fgsea_intersect)[grepl(paste(i,"cells_wk[02]_", sep = ""), 
+                                                 names(fgsea_intersect))],
+                    geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_tf_cross_pop",i,".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = tf_subset,
+                    orderRows = "median",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = 4,
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 10,
+                    width = 10,
+                    output = "matrix"
+                    )
+    }
+  }
+}
+
+min_max <- lapply(out_matrix, function(x){
+  return(list("max" = max(x), "min" = min(x)))
+})
+
+topScale <- c(max(unlist(min_max, use.names = F)), min(unlist(min_max, use.names = F)))
+
+
+      
+gsea_hm(fgsea_intersect, 
+        contrasts = names(fgsea_intersect)[grepl("DCcells_wk[02]_.*(W25|W55)", names(fgsea_intersect))],
+        geneset = "CHEA",
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/CHEA_gsea_intersect_tf_cross_pop_DC_select.pdf",
+                                      sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = tf_subset,
+                    orderRows = "median",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = 4,
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 10,
+                    width = 10,
+                    custom_scale = topScale
+                    )
+      
+
+for(i in pop_short_list){
+  for(j in genesets_figs){
+    if(j == "CHEA"){      
+      gsea_hm(fgsea_intersect, 
+        contrasts = names(fgsea_intersect)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_intersect))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_tf_cross_pop",i,".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = tf_subset,
+                    orderRows = "median",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = 4,
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 10,
+                    width = 10,
+                    custom_scale = topScale
+                    )
+      
+    }
+    gsea_hm(fgsea_intersect,
+        contrasts = names(fgsea_intersect)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_intersect))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_",i,".pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    orderRows = "median",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = 4,
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 15,
+                    width = 15
+                    )
+    # # gsea_hm(fgsea_intersect_no_kegg,
+    # #     contrasts = names(fgsea_intersect_no_kegg)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_intersect_no_kegg))],
+    # #     geneset = j,
+    # #                 pval_thr = 0.05,
+    # #                 filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_no_kegg_",i,".pdf", sep = ""),
+    # #                 clusterRowsGap = FALSE,
+    # #                 max_gs = 15,
+    # #                 orderRows = "mean"
+    # #                 )
+    gsea_hm(fgsea_intersect,
+        contrasts = names(fgsea_intersect)[grepl(paste(i,"cells_wk[02]_", sep = ""), names(fgsea_intersect))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset,
+                    orderRows = "median",
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Timepoint", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = 4,
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 15,
+                    width = 15
+                    )
+#     gsea_hm(fgsea_intersect_cross_pop,
+#         contrasts = names(fgsea_intersect_cross_pop)[grepl(paste(i,"cells_wk[02]_", sep = ""),
+#                                                            names(fgsea_intersect_cross_pop))],
+#         geneset = j,
+#                     pval_thr = 0.05,
+#                     filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_cross_pop",i,".pdf", sep = ""),
+#                     clusterRowsGap = FALSE,
+#                     max_gs = 15,
+#                     orderRows = "mean"
+#                     )
+# 
+#     gsea_hm(fgsea_intersect_cross_pop,
+#         contrasts = names(fgsea_intersect_cross_pop)[grepl(paste(i,"cells_wk[02]_", sep = ""),
+#                                                            names(fgsea_intersect_cross_pop))],
+#         geneset = j,
+#                     pval_thr = 0.05,
+#                     filename  = paste("output/figures/titer_intersect/",j,"_gsea_intersect_cross_pop",i,"_CREB.pdf", sep = ""),
+#                     clusterRowsGap = FALSE,
+#                     max_gs = 15,
+#                     subset = CREB_subset,
+#                     orderRows = "mean"
+#                     )
+
+  }
+}
+
+
+cross_pop_contrasts <- names(fgsea_intersect)[grepl("cells_wk25_",names(fgsea_intersect))]
+    cross_pop_contrasts <- cross_pop_contrasts[!grepl("IgG_W14|NK", cross_pop_contrasts)] 
+          
+    gsea_hm(fgsea_intersect,
+        contrasts = cross_pop_contrasts,
+        geneset = "CHEA",
+                    pval_thr = 0.05,
+                    filename  = "output/figures/titer_intersect/CHEA_gsea_intersect_wk25_all_CREB.pdf",
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset,
+                    annotation_col = fgsea_analysis_intersect_annotations[c("Population", "Ab_Timepoint")],
+                    #labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                    show_colnames = FALSE,
+                    gaps_col = c(3,6),
+                    cellwidth = 20,
+                    cellheight = 20,
+                    fontsize = 20,
+                    height = 10,
+                    width = 10,
+                    custom_scale = topScale
+                    )
+
+
+
+
+deg_filtered_CHEA_fgsea <- fgsea
+
+fgsea_intersect_CREB <- fgsea_intersect
+for(i in names(fgsea_intersect)){
+  fgsea_intersect_CREB[[i]]$c3$output <- fgsea_intersect[[i]]$c3$output %>%
+                                            filter(grepl("CREB", pathway)) %>%
+                                            dplyr::select(-leadingEdge)
+  print(i)
+  print(fgsea_intersect_CREB[[i]]$c3$output)
+}
+
+
+
+```
+
+
+
+
+
+
+
+```{r filter_immune_function}
+
+
+immune_filter <- paste(c("CHEMOKINE","CYTOKINE", "CXCR[0-9]+", "CXCL[0-9]+", "CCR[0-9]+", "CCL[0-9]+","T( |)CELLS","B( |)CELLS",
+                   "FOLLICULAR", "DENDRITIC", "TREG", "TH(1|2)", "TGF(-|)B",
+                   "TNF(A|AR|1R|R)", "FRACTALKINE", "EOTAXIN", "INTERLEUKIN", "IL(-|)[0-9]+", "IFN", "INTERFERON", "MHC", 
+                   "ANTIGEN( |_)PRESENTATION", "ANTIBODY", "TCR", "BCR", "NFKB", "RELB", "TLR", 
+                   "TOLL-LIKE", "MYD88", "TRAF", "INFLAMMASOME", "NLR", "NOD-LIKE", "CTLA", "PD(|-)(|L)1","4(|-)1BB","MCSF"),
+                   collapse = "|")
+
+
+
+fgsea_analysis_titers_ave_immune <- list()
+for(i in names(fgsea_analysis_titers_ave)){
+  fgsea_analysis_titers_ave_immune[[i]] <- fgsea_analysis_titers_ave[[i]]
+  fgsea_analysis_titers_ave_immune[[i]]$c2$output <- fgsea_analysis_titers_ave[[i]]$c2$output %>%
+        filter(grepl(immune_filter,pathway)) %>%
+        filter(pval < 0.05) %>%
+        filter(padj < 0.25)
+}
+
+```
+
+
+
+
+```{r gsea_hm_jacc}
+compute_modules_func_ledge <- function(fgsea_output, 
+                                p_threshold = 0.05,
+                                jaccard_threshold = 0.5) {
+  
+  
+  pathDF <- as.data.frame(fgsea_output) %>% 
+          filter(pval < p_threshold) 
+  #### enrichment map
+  # define nes (1 or -1)
+  nes <- 1
+  nes_check <- FALSE
+  outGS_list <- c()
+  
+  while(nes_check == FALSE){
+    if(nes == -1) {
+      leDF <- pathDF %>% dplyr::filter(NES < 0)
+      } else {
+          leDF <- pathDF %>% dplyr::filter(NES > 0)
+      }
+    leLS <- leDF$leadingEdge 
+    names(leLS) <- leDF$pathway
+    if(length(names(leLS)) != 0){
+      
+      # calculate Jaccard index
+        gsDist <- sapply(leLS, function(gs1) {
+          gsDist <- sapply(leLS, function(gs2) {
+                      gs1 <- gs1
+                      gs2 <- gs2
+                      jaccardIndex <- length(intersect(gs1, gs2))
+                      jaccardIndex <- jaccardIndex /
+                                      (length(gs1) + length(gs2) - jaccardIndex)
+          return(value = jaccardIndex)
+        })
+          return(value = gsDist)
+      })
+    
+      # filter based on jaccard threshold
+      gsMin <- gsDist
+      gsMin[gsMin < jaccard_threshold] <- 0
+      
+   
+      # remove all singletons
+      
+      if(is.null(dim(gsMin))){
+        outNet <- NA
+        return(outNet)
+      } else {
+        
+        flag <- rowSums(gsMin) > 1 | colSums(gsMin) > 1
+        gsFilt <- gsMin[flag, flag]
+        
+        if(dim(gsFilt)[1] == 0){
+          outNet <- NA
+          return(outNet)
+        } else {
+          
+        
+        # create graph
+        g <- graph.adjacency(gsFilt,
+                             mode = "undirected",
+                             weighted = TRUE,
+                             diag = FALSE)
+        
+        # decompose graph into modules and find most frequent genes of each module
+        gD <- decompose(g)
+        
+        outNet <- lapply(1:length(gD), FUN = function(i) {
+                    gsName <- V(gD[[i]])$"name"
+    
+              # select gene frequency based on the gene set size (corrected for the geneSet size)
+        # if size of geneset less than or equal to 4, select to represent greater than 50% geneFreq
+            geneFreq <- sort(table(unlist(leLS[gsName])))
+            if(length(gsName <= 4)) {
+                geneFreq <- geneFreq[geneFreq > 1/2 * length(gsName)]
+            } else {
+                geneFreq <- geneFreq[geneFreq > 1/4 * length(gsName)]
+            }
+            topGS <- gsName
+            geneFreq <- geneFreq[order(geneFreq, decreasing = TRUE)]
+         
+           
+           return(list("gs" = topGS,
+                 "genes" = names(geneFreq),
+                 "freq"  = geneFreq))    
+            
+      
+          })
+        }
+      }
+      #outNet <- do.call(what = "rbind", outNet) %>% as.data.frame(.) %>% mutate(NES = nes)
+    } else {
+      outNet <- NA
+    }
+      # outGS_list <- c(outGS_list,outNet)
+      #   outGS_list <- c(outGS_list,gsDist)
+      if(nes == -1){
+        outGS_list <- c(outGS_list, outNet)
+        nes_check <- TRUE
+      } else {
+        outGS_list <- outNet
+      }
+    nes <- nes * -1
+    } 
+    
+  
+  return(outGS_list)
+  #return(gsDist)
+}
+
+export_modules_to_spreadsheet <- function(module_list, path ){
+  module_list_filt <- module_list[!is.na(module_list)]
+  out <- sapply(names(module_list_filt), simplify = FALSE, USE.NAMES = TRUE, function(x){
+      df <- lapply(module_list_filt[[x]], function(y){
+        print(y)
+
+          return(data.frame("gs" = paste(y$gs, collapse = ","),
+                       "genes" = paste(y$genes, collapse = ",")))
+    
+    })
+      return(df)
+  })
+  return(out)
+}
+
+test <- export_modules_to_spreadsheet(c3_modules)
+
+update_gsea_with_modules <- function(fgsea_output, enrichment_map){
+    output <- fgsea_output 
+    if(!is.na(enrichment_map)){
+      for(i in enrichment_map){
+        if(!is.na(i)){
+          module <- i
+          df_not <- output %>% 
+            filter(!pathway %in% module$gs)
+      
+          output <- output %>% 
+                filter(pathway %in% module$gs) %>%
+                filter(pval == min(pval)) %>%
+                mutate(leadingEdge = list(module$genes)) %>%
+                bind_rows(df_not) %>%
+                arrange(desc(abs(NES)))
+        
+        }
+      }
+    }  
+    return(output)
+}
+```
+
+
+
+
+```{r enrichment_map, echo= FALSE}
+c3_modules <- list()
+for(i in names(fgsea_intersect_no_kegg)){
+  print(i)
+  c3_modules[[i]] <- compute_modules_func_ledge(fgsea_output = fgsea_intersect_no_kegg[[i]]$c3$output,
+                          jaccard_threshold = 0.25)
+  c3_modules_out[[i]]
+}
+
+c3_modules_total <- list()
+
+c3_gmt <- getGmt(geneset_list$c3)
+
+test <- lapply(names(c3_gmt), function(x){
+  df <- data.frame("pathway" = x, "leadingEdge" = list(geneIds(c3_gmt[x][[x]])), "pval" = 0.01) %>%
+        
+        nest(.)
+  return(df)
+})
+
+
+
+
+# 
+# c3_modules_ave <- list()
+# for(i in names(fgsea_analysis_titers_ave)){
+#   print(i)
+#   c3_modules_ave[[i]] <- compute_modules_func_ledge(fgsea_output = fgsea_analysis_titers_ave[[i]]$c3$output,
+#                           jaccard_threshold = 0.25)
+# }
+
+
+CREB_modules <- list()
+for(i in names(c3_modules)){
+  temp_mod <- c3_modules[[i]]
+  filt_mod <- list()
+  print(i)
+  index <- 1
+  for(j in temp_mod){
+    if(!is.na(j)){
+     if(grepl("CREB", j$gs)){
+      print(j$gs)
+      filt_mod[[index]] <- j
+      index <- index + 1
+      }
+    }
+  }
+  CREB_modules[[i]] <- filt_mod
+}
+
+
+CREB_modules_ave <- list()
+for(i in names(c3_modules_ave)){
+  temp_mod <- c3_modules_ave[[i]]
+  filt_mod <- list()
+  print(i)
+  index <- 1
+  for(j in temp_mod){
+    if(!is.na(j)){
+     if(grepl("CREB", j$gs)){
+      print(j$gs)
+      filt_mod[[index]] <- j
+      index <- index + 1
+      }
+    }
+  }
+  CREB_modules_ave[[i]] <- filt_mod
+}
+
+
+fgsea_intersect_no_kegg_modules <- fgsea_intersect_no_kegg
+for(i in names(c3_modules)){
+  fgsea_intersect_no_kegg_modules[[i]]$c3$output <- update_gsea_with_modules(fgsea_output =
+                                                                               fgsea_intersect_no_kegg[[i]]$c3$output,
+                                                                             enrichment_map = c3_modules[[i]]) #%>%
+                                                    #filter(grepl("CREB", pathway))
+}
+
+fgsea_intersect_no_kegg_CREB <- fgsea_intersect_no_kegg
+for(i in names(fgsea_intersect_no_kegg_CREB)){
+  fgsea_intersect_no_kegg_CREB[[i]]$c3$output <- fgsea_intersect_no_kegg[[i]]$c3$output  %>%
+                                                    filter(grepl("CREB", pathway)) %>%
+                                                    filter(pval < 0.05)
+  fgsea_intersect_no_kegg_CREB[[i]]$CHEA$output <- fgsea_intersect_no_kegg[[i]]$CHEA$output  %>%
+                                                    filter(grepl("CREB1", pathway)) %>%
+                                                    filter(pval < 0.05)
+}
+
+
+
+
+export_gsea_to_spreadsheet <- function(fgsea_object, geneset, path){
+  dlvl <- delevel_fgsea(fgsea_object, geneset_list = geneset_list)
+  filt_dlvl <- dlvl[grepl(paste("geneset:",geneset ,sep =""),names(dlvl))] 
+  
+  out <- list()
+  #return(filt_dlvl)
+  for(i in names(filt_dlvl)){
+    if(dim(filt_dlvl[[i]]$output)[1] >0){
+      new_index <- gsub("_geneset:.*", "", i)
+      out[[new_index]] <- filt_dlvl[[i]]$output %>% 
+                group_by(pathway) %>% 
+                unnest(.) %>%
+                mutate(leadingEdge = paste0(leadingEdge, collapse = ",")) %>%
+                unique(.)
+    } 
+  }
+  writexl::write_xlsx(out, path = path)
+  return(out)
+}
+
+
+
+fgsea_analysis_titers_ave_CREB <- fgsea_analysis_titers_ave_modules
+for(i in names(fgsea_analysis_titers_ave_modules)){
+  fgsea_analysis_titers_ave_CREB[[i]]$c3$output <- fgsea_analysis_titers_ave_modules[[i]]$c3$output %>%
+                                                      filter(grepl("CREB", pathway))
+}
+
+
+
+```
+
+
+```{r enrichment_map_across_timepoints}
+pop_gsea_merged <- list()
+for(i in names(fgsea_intersect_no_kegg)){
+  drop_lvl <- list()
+  dlvl <- delevel_fgsea(fgsea_object = fgsea_intersect_no_kegg, geneset_list = geneset_list)
+  filt_dlvl <- dlvl[grepl("geneset:c3",names(dlvl))] 
+  for(j in names(filt_dlvl)){
+    drop_lvl[[j]] <- filt_dlvl[[j]]$output %>% 
+                      as.data.frame(.) %>%
+                      #filter(grepl("CREB", pathway)) %>%
+                      #mutate(condition = j) %>%
+                      mutate(pathway = paste(pathway,j, sep = "___")) 
+                      
+  }
+  
+  for(j in pop_short_list){
+   pop_filt <- drop_lvl[grepl(j,names(drop_lvl))] 
+   pop_gsea_merged[[j]] <- do.call("rbind", pop_filt ) %>% remove_rownames(.)
+  }
+}
+
+c3_modules_merged <- list()
+for(i in names(pop_gsea_merged)){
+  c3_modules_merged[[i]] <- compute_modules_func_ledge(fgsea_output = pop_gsea_merged[[i]],
+                          jaccard_threshold = 0.25)
+}
+  
+  
+c3_modules <- list()
+for(i in names(fgsea_intersect_no_kegg)){
+  c3_modules[[i]] <- compute_modules_func_ledge(fgsea_output = fgsea_intersect_no_kegg[[i]]$c3$output,
+                          jaccard_threshold = 0.5)
+}
+
+
+
+
+```
+
+
+
+
+
+
+
+```{r gsea_hm_w_modules}
+
+for(i in pop_short_list){
+  for(j in genesets_figs){
+
+    gsea_hm(fgsea_intersect_no_kegg_modules, 
+        contrasts = names(fgsea_intersect_no_kegg_modules)[grepl(paste(i,"cells_wk[02]_", sep = ""),
+                                                                 names(fgsea_intersect_no_kegg_modules))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/intersect_modules/",j,"_gsea_intersect_modules_",i,".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15
+                    )
+    gsea_hm(fgsea_intersect_no_kegg_modules,
+        contrasts = names(fgsea_intersect_no_kegg_modules)[grepl(paste(i,"cells_wk[02]_", sep = ""),
+                                                                 names(fgsea_intersect_no_kegg_modules))],
+        geneset = j,
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/intersect_modules/",j,"_gsea_intersect_modules",i,"_CREB.pdf", sep = ""),
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    subset = CREB_subset
+                    )
+  }
+}
+
+
+
+```
+
+
+```{r gsea_figures}
+intersect_DC_GPCR <- gsea_hm(fgsea_intersect_GPCR_DC, 
+        contrasts = names(fgsea_intersect_GPCR_DC),
+        geneset = "c3",
+                    pval_thr = 0.05,
+                    filename  = "output/figures/c3_gsea_intersect_DC_GPCR.pdf", 
+                    clusterRowsGap = FALSE)
+
+intersect_T_GPCR <- gsea_hm(fgsea_intersect_GPCR_T, 
+        contrasts = names(fgsea_intersect_GPCR_T),
+        geneset = "c3",
+                    pval_thr = 0.05,
+                    filename  = "output/figures/c3_gsea_intersect_T_GPCR.pdf", 
+                    clusterRowsGap = FALSE)
+intersect_B_GPCR <- gsea_hm(fgsea_intersect_GPCR_B, 
+        contrasts = names(fgsea_intersect_GPCR_B),
+        geneset = "c3",
+                    pval_thr = 0.05,
+                    filename  = "output/figures/c3_gsea_intersect_B_GPCR.pdf", 
+                    clusterRowsGap = FALSE)
+
+```
+
+
+
+```{r interferon}
+fgsea_interferon <- fgsea_
+for(i in names(fgsea_intersect)){
+    fgsea_interferon[[i]]$c2$output <- fgsea_intersect[[i]]$c2$output %>%
+                                        filter(grepl("INTERFERON|IFN", pathway)) %>%
+                                        filter(pval < 0.05)
+}
+
+fgsea_interferon_postvaxx <- fgsea_analysis2
+for(i in names(fgsea_analysis2)){
+    fgsea_interferon_postvaxx[[i]]$c2$output <- fgsea_analysis2[[i]]$c2$output %>%
+                                        filter(grepl("INTERFERON|IFN", pathway)) %>%
+                                        filter(pval < 0.05)
+  
+}
+
+
+for(i in pop_short_list){
+    gsea_hm(fgsea_interferon, 
+        contrasts = names(fgsea_interferon)[grepl(paste(i,"cells_wk[0-9]+", sep = ""),
+                                                                 names(fgsea_interferon))],
+        geneset = "c2",
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/interferon/","c2","_gsea_interferon",i,".pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15
+                    )
+     gsea_hm(fgsea_interferon_postvaxx, 
+        contrasts = names(fgsea_interferon_postvaxx)[grepl(paste(i,"cells_wk[0-9]+", sep = ""),
+                                                           names(fgsea_interferon_postvaxx))],
+        geneset = "c2",
+                    pval_thr = 0.05,
+                    filename  = paste("output/figures/interferon/","c2","_gsea_post_pre_interferon",i,"_CREB.pdf", sep = ""), 
+                    clusterRowsGap = FALSE,
+                    max_gs = 15,
+                    annotation_col = fgsea_analysis2_annotations[c('Group',
+                                                                   "Population","Timepoint") ],
+                    show_colnames = F,
+                    labels_col = fgsea_analysis2_annotations["condition"],
+                    annotation_colors = colorAnnotations,
+                    annotation_dict = annotation_translate,
+                     width = 15,
+                    height = 15,
+                    cellheight = 20,
+                    cellwidth = 20,
+                    fontsize = 20
+                    )
+}
+
+
+```
+
+
+
+```{r interferon ledge}
+
+ifn_ledge <- sapply(pop_short_list, simplify = F, USE.NAMES = T, function(x){
+    contrasts <- names(fgsea_interferon_postvaxx)[grepl(paste(x,"cells_wk[0-9]+", sep = ""),
+                                                           names(fgsea_interferon_postvaxx))]
+    out <- unlist(lapply(contrasts, function(y){
+        ledge <- fgsea_interferon_postvaxx[[y]]$c2$output %>%
+                  as.data.frame() %>%
+                  filter(pval <0.05) %>%
+                  unnest(cols = "leadingEdge") %>%
+                  .$leadingEdge %>% unique()
+    }))
+    filt <- names(table(out)[table(out) >1])
+})
+
+sample_ledge_annotations <- do.call("rbind", lapply(pData(eset)[pData(eset)$StudyGroupCellType %in% 
+                                                                  c("G1_Tcells", "G1_Bcells", "G1_DCcells", "G2_Tcells", "G2_Bcells", "G2_DCcells"),]$SampleID, function(x){
+      pData_filt <- pData(eset)[pData(eset)$SampleID == x,]
+      
+      group <- pData_filt$StudyGroup
+      pop <- pData_filt$CellType
+      timepoint <- pData_filt$TimePoint
+      sample <- x
+      conditionName <- paste(annotation_translate[["Group"]][[group]],
+                             annotation_translate[["Timepoint"]][[timepoint]], sep = " ")
+      df <- data.frame("Group" = annotation_translate[["Group"]][[group]],
+                       "Population" = annotation_translate[["Population"]][[pop]],
+                       "Timepoint" = annotation_translate[["Timepoint"]][[timepoint]],
+                       #"newName" = conditionName,
+                       "sample" = x)
+      row.names(df) <- x
+      return(df)
+}))
+
+
+
+ifn_expr_ledge <- sapply(names(ifn_ledge), simplify = F, USE.NAMES = T, function(x){
+  filt_ids <- as.data.frame(pData(eset)) %>%
+                filter(StudyGroupCellType %in% c("G1_Tcells", "G1_Bcells", "G1_DCcells", "G2_Tcells", "G2_Bcells", "G2_DCcells")) %>%
+                mutate(Population = gsub("cells", "", CellType)) %>%
+                filter(Population == x) %>%
+                mutate(TimePoint = factor(TimePoint, levels = c("pre", "wk0", "wk2", "wk25"))) %>%
+                mutate(Group = StudyGroup) %>%
+                arrange(StudyGroup, TimePoint) 
+  
+                
+  #return(filt_ids)
+  filt_probes <- as.data.frame(fData(eset)) %>%
+                filter(BROAD.Gene.Symbol %in% ifn_ledge[[x]]) 
+  annot_df <- sample_ledge_annotations[filt_ids$SampleID,]
+  matr <- t(scale(t(exprs(eset[filt_probes$ProbeID,filt_ids$SampleID]))))
+  
+  matr <- as.data.frame(matr) %>%
+            rownames_to_column("ProbeID") %>%
+            gather(SampleID, value, -ProbeID) %>%
+            left_join(., filt_ids %>% dplyr::select(SampleID, MonkeyNumber, TimePoint ), by = "SampleID") %>%
+            group_by(MonkeyNumber, ProbeID, TimePoint) %>%
+            mutate(rown = row_number()) %>%
+            ungroup() %>%
+            filter(rown == 1) %>%
+            dplyr::select(-MonkeyNumber, -rown, -TimePoint) %>%
+            spread(SampleID, value) %>%
+            column_to_rownames("ProbeID") %>% as.matrix()
+  matr <- matr[,intersect(filt_ids$SampleID,colnames(matr))]
+  
+  
+  colorAnnotations_filt2 <- sapply(names(colorAnnotations), simplify = F, USE.NAMES = T, function(x){
+          inp <- colorAnnotations[[x]]
+          out <- inp[names(inp) %in% as.character(unlist(annot_df, use.names = F))]
+          out <- setNames(as.character(out), names(out))
+          return(out)
+    })
+  #return(colorAnnotations_filt2)
+ # return(matr)
+  hm <- pheatmap(mat= matr,
+                  annotation_col = sample_ledge_annotations[c('Group',
+                                                                   "Population","Timepoint") ],
+                 annotation_colors = colorAnnotations_filt2,
+                 cluster_cols = F,
+                 show_rownames = F,
+                 show_colnames = F,
+                 color = colorAssign(valueVector = matr),
+                 filename = paste("output/figures/interferon/leadingEdge_interferon_postvaxx", x, ".pdf", sep = ""),
+                 labels_row = filt_probes$BROAD.Gene.Symbol
+                 )
+})
+
+
+                        
+
+
+```
+
+
+
+```{r }
+for(i in names(split_fits_titers)){
+  for(j in names(split_fits_titers[[i]])){
+    concat <- print(paste(i, j, sep ="__"))
+    df <- split_fits_titers[[i]][[j]]$topTable[[concat]]
+    df <- df[df$BROAD.Gene.Symbol == "CX3CR1", ]
+
+    print(df)
+  }
+}
+
+
+for(i in names(fgsea)){
+  for(j in names(split_fits_titers[[i]])){
+    concat <- print(paste(i, j, sep ="__"))
+    df <- split_fits_titers[[i]][[j]]$topTable[[concat]]
+    df <- df[df$BROAD.Gene.Symbol == "CX3CR1", ]
+
+    print(df)
+  }
+}
+
+
+
+
+
+
+```
+
+
+
+```{r export wk25 leadingEdge}
+
+wk25_names <- names(fgsea_intersect)[grepl("wk25", names(fgsea_intersect))]
+wk25_names <- wk25_names[!grepl("W14|NK", wk25_names)]
+wk25_LEDGE <- unique(do.call("rbind",lapply(wk25_names, function(x){
+    LE <- fgsea_intersect[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          unnest(.) %>%
+          dplyr::select(pathway, leadingEdge)
+          
+  return(LE)
+})))
+
+
+write_csv(wk25_LEDGE, path = file.path(dataOutDir, "study36_wk25_ledge_combined.csv"))
+
+
+```
+
+
+
+```{r fits_cytok_chemo}
+cytok_chemo_degs <- list()
+
+for(i in names(split_fits_titers)){
+  for(j in names(split_fits_titers[[i]])){
+    concat <- paste(i,j, sep = "__")
+    if(!grepl("NK", concat)){
+      cytok_chemo_degs[[concat]] <- as.data.frame(split_fits_titers[[i]][[j]]$topTable[[concat]]) %>%
+                                  rownames_to_column("Illmn.ID") %>%
+                                  #inner_join(., fData(esetBaselined) %>% rownames_to_column("Illmn.ID"), by = "Illmn.ID") %>%
+                                  filter(BROAD.Gene.Symbol %in% immport_cytok_chemo) %>%
+                                  filter(grepl("CCL11|CCL24|CCL26|CX3CL1|CX3CR1|CCR2|CCR3|CCR5", BROAD.Gene.Symbol)) %>%
+                                  filter(P.Value < 0.1) %>%
+                                  mutate(contrast = concat) %>%
+                                  dplyr::select(ProbeID, SYMBOL, logFC, t, P.Value, adj.P.Val, contrast)
+    }
+  }
+}
+
+eosinophils_frac <- do.call("rbind", cytok_chemo_degs) %>% arrange(SYMBOL, contrast)
+
+write.csv(eosinophils_frac, file = file.path(dataOutDir,"eosinophils_fractalkine.csv"), row.names = F, quote = F)
+
+```
+
+
+
+```{r export GSEA_tables_CHEA}
+fgsea_analysis2$G1_Bcells_wk0_vs_G1_Bcells_pre$CHEA$output
+
+export_postvaxx_CHEA <- do.call("rbind", sapply(names(fgsea_analysis2), simplify = F, USE.NAMES = T, function(x){
+  df <- fgsea_analysis2[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        dplyr::select(-leadingEdge, -nMoreExtreme) %>%
+        filter(padj < 0.05) %>%
+        mutate(contrast = x) %>%
+        arrange(desc(abs(NES)))
+  return(df)
+})) %>% remove_rownames() %>%
+    filter(!grepl("NKcells|wk25", contrast)) %>%
+    mutate(condition = sub("_wk.*", "", contrast)) %>%
+   mutate(CellType = sub("G[12]_", "", condition )) %>%
+    unnest(cols = "CellType") %>% 
+  split(., f = .$CellType)
+
+writexl::write_xlsx(export_postvaxx_CHEA, "output/data/export_GSEA_CHEA_postvax.xlsx")
+
+export_titers_CHEA <- do.call("rbind", sapply(names(fgsea_analysis_titers), simplify = F, USE.NAMES = T, function(x){
+  df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        dplyr::select(-leadingEdge, -nMoreExtreme) %>%
+        filter(padj < 0.05) %>%
+        mutate(contrast = x) %>%
+        arrange(desc(abs(NES)))
+  return(df)
+})) %>% remove_rownames() %>%
+    filter(!grepl("NKcells|wk25", contrast)) %>%
+   mutate(CellType = sub("_wk.*", "", contrast )) %>%
+    unnest(cols = "CellType") %>% 
+  split(., f = .$CellType)
+
+writexl::write_xlsx(export_titers_CHEA, "output/data/export_GSEA_CHEA_titers.xlsx")
+
+export_combined_CHEA <- do.call("rbind", sapply(names(fgsea_intersect), simplify = F, USE.NAMES = T, function(x){
+  df <- fgsea_intersect[[x]]$CHEA$output %>%
+        as.data.frame() %>%
+        dplyr::select(-leadingEdge, -nMoreExtreme) %>%
+        filter(padj < 0.05) %>%
+        mutate(contrast = x) %>%
+        arrange(desc(abs(NES)))
+  return(df)
+})) %>% remove_rownames() %>%
+    filter(!grepl("NKcells|wk25", contrast)) %>%
+    mutate(CellType = str_extract_all(contrast, ".*cells")) %>%
+    unnest(cols = "CellType") %>% 
+  split(., f = .$CellType)
+
+writexl::write_xlsx(export_combined_CHEA, "output/data/export_GSEA_CHEA_intersect.xlsx")
+
+```
+
+
+```{r NES_medians}
+
+NES_summary_postvaxx <- sapply(names(export_postvaxx_CHEA), simplify = F, USE.NAMES = T, function(x){
+    df <- export_postvaxx_CHEA[[x]] %>%
+          dplyr::select(pathway, NES, contrast) %>%
+          spread(contrast, NES) %>%
+          gather(contrast, NES, -pathway) %>%
+          mutate(NES = ifelse(is.na(NES), 0, NES)) %>%
+          group_by(pathway) %>%
+          summarise(meanNES = mean(NES),
+                    meadianNES= median(NES)) %>%
+          ungroup() %>%
+          arrange(desc(meanNES))
+    return(df)
+})
+
+writexl::write_xlsx(NES_summary_postvaxx, "output/data/NES_summary_postvax.xlsx")
+              
+NES_summary_titers<- sapply(names(export_titers_CHEA), simplify = F, USE.NAMES = T, function(x){
+    df <- export_titers_CHEA[[x]] %>%
+          dplyr::select(pathway, NES, contrast) %>%
+          spread(contrast, NES) %>%
+          gather(contrast, NES, -pathway) %>%
+          mutate(NES = ifelse(is.na(NES), 0, NES)) %>%
+          group_by(pathway) %>%
+          summarise(meanNES = mean(NES), 
+                    medianNES = median(NES)) %>%
+          ungroup() %>%
+          arrange(desc(meanNES))
+    return(df)
+})
+              
+writexl::write_xlsx(NES_summary_titers, "output/data/NES_summary_titers.xlsx")
+
+
+NES_summary_intersect <- sapply(names(export_combined_CHEA), simplify = F, USE.NAMES = T, function(x){
+    df <- export_combined_CHEA[[x]] %>%
+          dplyr::select(pathway, NES, contrast) %>%
+          spread(contrast, NES) %>%
+          gather(contrast, NES, -pathway) %>%
+          mutate(NES = ifelse(is.na(NES), 0, NES)) %>%
+          filter(grepl(tf_subset, pathway)) %>%
+          group_by(pathway) %>%
+          summarise(meanNES = mean(NES) ,
+                    medianNES = median(NES)) %>%
+          ungroup() %>%
+          arrange(desc(meanNES))
+    return(df)
+})
+                 
+writexl::write_xlsx(NES_summary_intersect, "output/data/NES_summary_intersect.xlsx")
+
+
+
+
+
+
+
+```
+
+
+
+
+```{r g1g2_CREB}
+# test <- sapply(names(fgsea_analysis2), USE.NAMES = T, simplify = F, function(x){
+#     df <- fgsea_analysis2[[x]]$interferome$output %>%
+#           filter(pathway == "I") %>%
+#           dplyr::select(-leadingEdge)
+#     return(df)
+# }) 
+
+CREB_post_ledge<- sapply(names(fgsea_analysis2), USE.NAMES = T, simplify = F, function(x){
+    df <- fgsea_analysis2[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          unnest(cols = "leadingEdge") %>%
+           .$leadingEdge
+    return(df)
+}) 
+CREB_post_ledge <- CREB_post_ledge[!grepl("NK", names(CREB_post_ledge))]
+
+
+CREB_titer_ledge <- sapply(names(fgsea_analysis_titers), USE.NAMES = T, simplify = F, function(x){
+    df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+          filter(pathway == "CREB1") %>%
+          unnest(cols = "leadingEdge") %>%
+           .$leadingEdge
+    return(df)
+}) 
+CREB_titer_ledge <- CREB_titer_ledge[!grepl("NK", names(CREB_titer_ledge))]
+
+G1G2_ledge_overlap <- do.call("rbind", sapply(names(CREB_titer_ledge), simplify = F, USE.NAMES = T, function(x){
+    pop <- gsub("__.*", "", x )
+    filt <- names(CREB_post_ledge)[grepl(pop, names(CREB_post_ledge))]
+    if(grepl("wk25", pop) == FALSE){
+      filt <- filt[!grepl("wk25", filt)]
+    }
+    ledge <- do.call("rbind", sapply(filt, USE.NAMES = T, simplify = F, function(y){
+       group  <- unique(unlist(str_extract_all(y, "G[12]")))
+       out <- length(intersect(CREB_post_ledge[[y]], CREB_titer_ledge[[x]]))/length(CREB_post_ledge[[y]])
+       df_out <- data.frame("titer_outcome" = x, "Group" = group , "pct_of_leadingEdge_from_induced" = out)
+    }))
+    return(ledge)
+})) %>% remove_rownames()
+
+write.csv("output/data/G1G2_leadingedge_overlap.csv", x = G1G2_ledge_overlap)
+
+
+```
+
+
+
+```{r ATF4 }
+fgsea
+
+
+creb2_postvax <- do.call('rbind', lapply(names(fgsea_analysis2), function(x){
+  temp <- fgsea_analysis2[[x]]$transfac$output %>%
+            filter(pathway %in%  c("ATF4", "CREB2")) %>%
+            filter(pval < 0.05) %>%
+            dplyr::select(pathway, NES) %>%
+            mutate(condition = x)
+  return(temp)
+
+}))
+
+write_tsv(creb2_postvax, path = "output/data/CREB2_Postvax.txt")
+
+creb2_titers <- do.call('rbind', lapply(names(fgsea_analysis_titers), function(x){
+  temp <- fgsea_analysis_titers[[x]]$transfac$output %>%
+            dplyr::filter(pathway %in%  c("ATF4", "CREB2")) %>%
+            dplyr::filter(pval < 0.05) %>%
+            dplyr::select(pathway, NES) %>%
+            mutate(condition = x)
+  return(temp)
+
+})) %>%
+  filter(!grepl("NK", condition))
+
+write_tsv(creb2_titers, path = "output/data/CREB2_vs_titers.txt")
+
+creb_t_post <- do.call("rbind", lapply(names(fgsea_analysis2), function(x){
+   df <- fgsea_analysis2[[x]]$CHEA$output %>%
+          as.data.frame() %>%
+          filter(pval < 0.05) %>%
+          filter(pathway == "CREB1") %>%
+          unnest(cols = leadingEdge) %>%
+          mutate(condition = x) %>%
+          dplyr::select(condition, leadingEdge) %>%
+          mutate(contrast = "post-pre")
+})) %>%
+  filter(!grepl("NK", condition)) %>%
+  mutate(n_conditions_total = n_distinct(condition)) %>%
+  group_by(leadingEdge) %>%
+  mutate(conditions = paste(condition, collapse = "; ")) %>%
+  mutate(n_conditions = n_distinct(condition)) %>%
+  ungroup() %>%
+  mutate(leadingEdge_frequency = n_conditions/n_conditions_total) %>%
+  dplyr::select(-condition) %>%
+  dplyr::rename(CREB_target = "leadingEdge") %>%
+  unique() %>%
+  arrange(desc(leadingEdge_frequency))
+
+creb_t_titers <- do.call("rbind", lapply(names(fgsea_analysis_titers), function(x){
+   df <- fgsea_analysis_titers[[x]]$CHEA$output %>%
+          as.data.frame() %>%
+          filter(pval < 0.05) %>%
+          filter(pathway == "CREB1") %>%
+          unnest(cols = leadingEdge) %>%
+          mutate(condition = x) %>%
+          dplyr::select(condition, leadingEdge) %>%
+          mutate(contrast = "titer_correlation")
+})) %>%
+ filter(!grepl("NK", condition)) %>%
+  mutate(n_conditions_total = n_distinct(condition)) %>%
+  group_by(leadingEdge) %>%
+  mutate(conditions = paste(condition, collapse = "; ")) %>%
+  mutate(n_conditions = n_distinct(condition)) %>%
+  ungroup() %>%
+  mutate(leadingEdge_frequency = n_conditions/n_conditions_total) %>%
+  dplyr::select(-condition) %>%
+  dplyr::rename(CREB_target = "leadingEdge") %>%
+  unique() %>%
+  arrange(desc(leadingEdge_frequency))
+
+
+
+writexl::write_xlsx(x = list("induced" = creb_t_post, "titers" = creb_t_titers), 
+                    path = "output/data/CREB1_target_genes_study36.xlsx")
+
+
+
+```
+
+
+
+```{r ORA_func}
+
+hypergeom_ORA <- function(genelist, geneset_ids, N){
+  intersect <- intersect(genelist, geneset_ids)
+  m <- length(genelist)
+  N <- N
+  n <- N - m
+  k <- length(geneset_ids)
+  x <- length(intersect)
+
+  
+  if(x > 0 ){
+    p.value <- phyper(q = x - 1 , m = m, n = n, k = k, lower.tail = F)
+    out <- data.frame("p.value" = p.value, "leadingEdge" = paste(intersect, collapse = "; "),
+                      "n_genes" = x)
+  } else { 
+    out <- data.frame("p.value" = 1, "leadingEdge" = "",
+                      "n_genes" = "")
+   
+    }
+  
+  return(out)
+}
+
+ORA_test <- function(toptable, geneID_column = "SYMBOL",  pthr = 0.05, padj = 1, genesetColl,
+                     directional = T){
+  require(checkmate)
+  coll = makeAssertCollection()
+  assertDataFrame(toptable, null.ok = F, .var.name = "toptable",
+              add = coll)
+  if(!class(genesetColl) %in% c('GeneSetCollection', 'GeneSet')){
+    coll$push("variable 'genesetColl' not of the GeneSetCollection or GeneSet class from GSEABase. Provide a valid object.")
+   
+  }
+
+  assertCharacter(geneID_column, null.ok = F, max.len = 1, 
+                  .var.name = "geneID_column", add = coll)
+  assertNumeric(pthr, lower = 0, upper = 1, null.ok = F, .var.name = "pthr", max.len = 1,
+              add = coll)
+  assertNumeric(padj, lower = 0, upper = 1, null.ok = F, .var.name = "padj", max.len = 1,
+              add = coll)
+  assertLogical(directional, null.ok = F, .var.name = "directional", max.len = 1,
+              add = coll)
+  
+  reportAssertions(coll)
+  
+  if(length(intersect(colnames(toptable), y = geneID_column)) == 0){
+    coll$push(paste("Column ", geneID_column, 
+                    " not found in toptable. Please provide valid column", sep = ""))
+  }
+  
+  reportAssertions(coll)
+  
+  if(length(intersect(toptable[[geneID_column]], y = unique(unlist(geneIds(genesetColl), 
+                                                                   use.names = F)))) == 0){
+    coll$push('Gene Identifiers not found in Geneset Collection')
+  }
+  reportAssertions(coll)
+  
+  
+  
+  df <- toptable %>%
+        as.data.frame(.) %>%
+        dplyr::rename(geneid_coll = geneID_column) %>%
+        filter(!geneid_coll %in%  c("", "---", "")) %>%
+        filter(!is.na(geneid_coll)) %>%
+        separate_rows(geneid_coll, sep = " /// ") %>%
+        mutate(DIR = ifelse(sign(logFC) == 1, "UP", "DN"))
+ 
+  filt <- df %>%
+          filter(P.Value < pthr) %>%
+          filter(adj.P.Val < padj) 
+  
+  idLS <- list()
+  if(directional){
+    idLS[["UP"]] <- unique(filt[filt$DIR == "UP",][["geneid_coll"]])
+    idLS[["DN"]] <- unique(filt[filt$DIR == "DN",][["geneid_coll"]])
+  } else {
+    idLS[["ALL"]] <- unique(filt[["geneid_coll"]])
+  }
+          
+  ORA_out <- do.call("rbind", lapply(names(idLS), function(x){
+  #ORA_out <- sapply(names(idLS), simplify = F, USE.NAMES = T, function(x){
+  #    out <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(genesetColl)[[1]],
+  #                   N = length(unique(df$geneid_coll)))
+  #   
+  # })
+      if(class(genesetColl) == "GeneSetCollection"){
+        #out <- sapply(names(genesetColl), simplify = F, USE.NAMES = T, function(y){
+        out <- do.call("rbind", lapply(names(genesetColl), function(y){
+          gs <- genesetColl[names(genesetColl) == y]
+          ins <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(gs)[[1]],
+                       N = length(unique(df$geneid_coll))) %>%
+                mutate(direction = x,
+                       pathway = y) %>%
+                        dplyr::select(pathway, direction, everything())
+        #})
+        #out <- do.call("rbind", lapply(names(genesetColl), function(y){
+          
+        }))
+      } else {
+
+        out <- hypergeom_ORA(idLS[[x]], geneset_ids = geneIds(genesetColl)[[1]],
+                       N = length(unique(df$geneid_coll))) %>%
+                mutate(direction = x,
+                       pathway = names(genesetColl)[[1]]) %>%
+                        dplyr::select(pathway, direction, everything())
+    }
+  }))
+  #})  
+  
+  ORA_out <- ORA_out %>% 
+              mutate(padj = p.adjust(p.value)) %>%
+              arrange(p.value) %>%
+              mutate(logp = ifelse(direction == "DN", log10(p.value),
+                                   -log10(p.value))) %>%
+              dplyr::select(pathway, direction, p.value, padj, logp, n_genes, leadingEdge )
+
+  return(ORA_out)
+}
+
+
+
+
+
+
+
+```
+
+
+```{r ORA_CREB1}
+
+
+ORA_postLS <- sapply(names(DEG_table_merged), simplify = F, USE.NAMES = T, function(x){
+      out <- ORA_test(DEG_table_merged[[x]], genesetColl = CREB_CHEA, padj = 1,
+                      geneID_column = "BROAD.Gene.Symbol")
+})
+
+ORA_titers_LS <- sapply(names(DEG_table_merged_titers), simplify = F, USE.NAMES = T, function(x){
+      out <- ORA_test(DEG_table_merged_titers[[x]][[x]], genesetColl = CREB_CHEA, padj = 1,
+                      geneID_column = "BROAD.Gene.Symbol")
+})
+
+
+
+
+
+CREB_ORA_df_post <- do.call("rbind", lapply(names(ORA_postLS), function(x){
+    out <- ORA_postLS[[x]] %>%
+             mutate(contrast = x) %>%
+            filter(pathway == "CREB1") %>%
+            filter(!grepl("NKcells", contrast)) %>%
+            dplyr::select(contrast, everything()) %>%
+            dplyr::select(-leadingEdge, -n_genes ) %>% 
+            filter(p.value <0.05)
+        
+}))
+
+write_tsv(CREB_ORA_df_post,path = "output/data/ORA_study36_CREB1_CHEA_postvaxx.txt" )
+
+CREB_ORA_df_titers <- do.call("rbind", lapply(names(ORA_titers_LS), function(x){
+    out <- ORA_titers_LS[[x]] %>%
+             mutate(contrast = x) %>%
+            filter(pathway == "CREB1") %>%
+            filter(!grepl("NKcells", contrast)) %>%
+            dplyr::select(contrast, everything()) %>%
+            dplyr::select(-leadingEdge, -n_genes ) %>% 
+            filter(p.value <0.05)
+        
+}))
+
+write_tsv(CREB_ORA_df_titers,path = "output/data/ORA_study36_CREB1_CHEA_titers.txt" )
+
+```
+
+
+
+```{r GSEA_CREB_tables}
+
+creb_gsea_postLS <- sapply(names(fgsea_analysis2), simplify = F, USE.NAMES = T, function(x){
+      out <- fgsea_analysis2[[x]]$CHEA$output
+})
+
+creb_gsea_titers_LS <- sapply(names(fgsea_analysis_titers), simplify = F, 
+                              USE.NAMES = T, function(x){
+      out <- fgsea_analysis_titers[[x]]$CHEA$output
+})
+
+
+
+
+CREB_gsea_df_summ_post <- do.call("rbind", lapply(names(creb_gsea_postLS), function(x){
+    out <- creb_gsea_postLS[[x]] %>%
+             mutate(contrast = x) %>%
+             filter(!grepl("NKcells", contrast)) %>%
+            filter(pathway == "CREB1") %>%
+            dplyr::select(contrast, everything()) %>%
+            dplyr::select(-leadingEdge, -size, -nMoreExtreme ) 
+        
+}))
+
+write_tsv(CREB_gsea_df_summ_post,path = "output/data/GSEA_study_CREB1_CHEA_summary_postvaxx.txt" )
+
+
+CREB_gsea_df_summ_titers <- do.call("rbind", lapply(names(creb_gsea_titers_LS), function(x){
+    out <- creb_gsea_titers_LS[[x]] %>%
+             mutate(contrast = x) %>%
+             filter(!grepl("NKcells", contrast)) %>%
+            filter(pathway == "CREB1") %>%
+            dplyr::select(contrast, everything()) %>%
+            dplyr::select(-leadingEdge, -size, -nMoreExtreme ) 
+        
+}))
+
+write_tsv(CREB_gsea_df_summ_titers,path = "output/data/GSEA_study_CREB1_CHEA_summary_titers.txt" )
+
+
+
+
+```
+
+
+```{r CREB ORA_hm}
+
+CREB_ORA_barplot_post <-  CREB_ORA_df_post %>%
+                    mutate(condition = gsub("_vs_.*", "", contrast)) %>%
+                    mutate(cell_type = gsub("_wk.*", "", condition)) %>%
+                    mutate(cell_type = gsub("G[12]_", "", cell_type)) %>%
+                    filter(!grepl("wk25", condition)) %>%
+                    mutate(condition = gsub("_.*cells_", "_", condition)) %>%
+                    ggplot(., aes(x = condition, y = logp, fill = direction)) +
+                    geom_bar(position = "stack", stat = "identity") +
+                    theme_bw() + 
+                    geom_hline(yintercept = -log10(0.05), linetype = "dashed", 
+                               color = "darkgray") +
+                    geom_hline(yintercept = log10(0.05), linetype = "dashed", 
+                               color = "darkgray") +
+                    geom_hline(yintercept = 0, color = "black") +
+                    theme(axis.title = element_text(size = 14),
+                          axis.text = element_text(size = 12),
+                          strip.text.x = element_text(size = 14)) +
+                    ylab("-log(p.value) * sign(FC)") +
+                    facet_wrap(~cell_type, ncol = 1) +
+                    coord_flip()
+                   
+                    #mutate(cell = unlist(str_extract(contrast,"_.*cells_wk[0-2]+")))
+
+ggsave(CREB_ORA_barplot_post, filename = "output/figures/CREB_ORA_postvaxx_study36_barplot.pdf")
+
+CREB_ORA_barplot_titers <-  CREB_ORA_df_titers %>%
+                    mutate(condition = gsub("_vs_.*", "", contrast)) %>%
+                    mutate(cell_type = gsub("_wk.*", "", condition)) %>%
+                    filter(!grepl("wk25", condition)) %>%
+                    mutate(condition = gsub(".*cells_", "", condition)) %>%
+                    ggplot(., aes(x = condition, y = logp, fill = direction)) +
+                    geom_bar(position = "stack", stat = "identity") +
+                    theme_bw() + 
+                    geom_hline(yintercept = -log10(0.05), linetype = "dashed", 
+                               color = "darkgray") +
+                    geom_hline(yintercept = log10(0.05), linetype = "dashed", 
+                               color = "darkgray") +
+                    geom_hline(yintercept = 0, color = "black") +
+                    theme(axis.title = element_text(size = 14),
+                          axis.text = element_text(size = 12),
+                          strip.text.x = element_text(size = 14)) +
+                    ylab("-log(p.value) * sign(FC)") +
+                    facet_wrap(~cell_type, ncol = 1) +
+                    coord_flip()
+                   
+                    #mutate(cell = unlist(str_extract(contrast,"_.*cells_wk[0-2]+")))
+
+ggsave(CREB_ORA_barplot_titers, filename = "output/figures/CREB_ORA_titers_study36_barplot.pdf")
+
+
+```
+
+
+
+```{r export_tables}
+
+lapply(names(fgsea_analysis2)[!grepl("NK", names(fgsea_analysis2))], function(x){
+  lS <- fgsea_analysis2[[x]]
+  df <- do.call("rbind", lapply(intersect(names(lS), c("CHEA", "c2", "c3","c5", "interferome")), function(y){
+    out <- lS[[y]]$output %>%
+            filter(pval <0.05) %>%
+            unnest(cols = "leadingEdge") %>%
+            mutate(tmp = leadingEdge) %>%
+            group_by(pathway) %>%
+            mutate(leadingEdge = paste(tmp, collapse = "; ")) %>%
+            ungroup() %>%
+            dplyr::select(-tmp) %>% unique() %>%
+            mutate(geneset = y)
+  }))
+  write_tsv(df, path = paste("data_tables/gsea/Study36/", x, ".txt"))
+})
+
+lapply(names(fgsea_analysis_titers)[!grepl("NK", names(fgsea_analysis_titers))], function(x){
+  lS <- fgsea_analysis_titers[[x]]
+  df <- do.call("rbind", lapply(intersect(names(lS), c("CHEA", "c2", "c3","c5", "interferome")), function(y){
+    out <- lS[[y]]$output %>%
+            filter(pval <0.05) %>%
+            unnest(cols = "leadingEdge") %>%
+            mutate(tmp = leadingEdge) %>%
+            group_by(pathway) %>%
+            mutate(leadingEdge = paste(tmp, collapse = "; ")) %>%
+            ungroup() %>%
+            dplyr::select(-tmp) %>% unique() %>%
+            mutate(geneset = y)
+  }))
+  write_tsv(df, path = paste("data_tables/gsea/Study36/", x, ".txt"))
+})
+
+
+lapply(names(DEG_table_merged)[!grepl("NK", names(DEG_table_merged))], function(x){
+  df <- DEG_table_merged[[x]] %>% 
+            arrange(desc(t)) %>%
+            mutate(rank = row_number())
+  
+  write_tsv(df, path = paste("data_tables/contrasts/Study36/", x, ".txt"))
+})
+lapply(names(DEG_table_merged_titers)[!grepl("NK", names(DEG_table_merged_titers))], function(x){
+  df <- DEG_table_merged_titers[[x]][[x]] %>% 
+            arrange(desc(t)) %>%
+            mutate(rank = row_number())
+  
+  write_tsv(df, path = paste("data_tables/contrasts/Study36/", x, ".txt"))
+})
+
+```
